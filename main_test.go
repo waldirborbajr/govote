@@ -1,5 +1,4 @@
 package main
-package main
 
 import (
 	"bytes"
@@ -8,7 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
+
+	sqinn "github.com/cvilsmeier/sqinn-go/v2"
 )
 
 func TestAPIEndpoints(t *testing.T) {
