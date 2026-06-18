@@ -19,13 +19,13 @@ import (
 // ============================================================================
 
 type Poll struct {
-	ID        int64      `json:"id"`
-	Title     string     `json:"title"`
-	Type      string     `json:"type"` // "radio" or "checkbox"
-	StartDate string     `json:"start_date"`
-	EndDate   string     `json:"end_date"`
-	Answers   []Answer   `json:"answers"`
-	CreatedAt string     `json:"created_at"`
+	ID        int64    `json:"id"`
+	Title     string   `json:"title"`
+	Type      string   `json:"type"`
+	StartDate string   `json:"start_date"`
+	EndDate   string   `json:"end_date"`
+	Answers   []Answer `json:"answers"`
+	CreatedAt string   `json:"created_at"`
 }
 
 type Answer struct {
@@ -33,22 +33,6 @@ type Answer struct {
 	PollID       int64  `json:"poll_id"`
 	Text         string `json:"text"`
 	DisplayOrder int    `json:"display_order"`
-}
-
-type Vote struct {
-	ID        int64  `json:"id"`
-	PollID    int64  `json:"poll_id"`
-	CPF       string `json:"cpf"`
-	AnswerIDs string `json:"answer_ids"` // JSON array as string
-	VotedAt   string `json:"voted_at"`
-}
-
-type Voter struct {
-	CPF        string `json:"cpf"`
-	Name       string `json:"name"`
-	Phone      string `json:"phone"`
-	Passcode   string `json:"passcode"`
-	VerifiedAt *string `json:"verified_at"`
 }
 
 type ResultAnswer struct {
@@ -71,9 +55,9 @@ type VerifyReq struct {
 
 type CreatePollReq struct {
 	Title     string `json:"title"`
-	Type      string `json:"type"` // "radio" or "checkbox"
-	StartDate string `json:"start_date"` // RFC3339
-	EndDate   string `json:"end_date"`   // RFC3339
+	Type      string `json:"type"`
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
 	Answers   []struct {
 		Text string `json:"text"`
 	} `json:"answers"`
@@ -88,14 +72,13 @@ type VoteReq struct {
 // GLOBAL DB
 // ============================================================================
 
-var db *sqinn.Database
+var db *sqinn.Sqinn
 
 // ============================================================================
 // SCHEMA
 // ============================================================================
 
 func initDB() error {
-	// Create tables
 	schemas := []string{
 		`CREATE TABLE IF NOT EXISTS voters (
 			cpf TEXT PRIMARY KEY,
@@ -132,10 +115,7 @@ func initDB() error {
 	}
 
 	for _, schema := range schemas {
-		_, err := db.Exec(schema)
-		if err != nil {
-			return fmt.Errorf("schema creation failed: %w", err)
-		}
+		db.MustExecSql(schema)
 	}
 	return nil
 }
@@ -150,7 +130,8 @@ func generatePasscode() string {
 	if err != nil {
 		log.Fatalf("rand failed: %v", err)
 	}
-	return strconv.Itoa(int((b[0]<<8|b[1])%10000))
+	val := (int(b[0])<<8 | int(b[1])) % 10000
+	return fmt.Sprintf("%04d", val)
 }
 
 func isPollActive(startDate, endDate string) bool {
@@ -194,20 +175,20 @@ func handleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 
 	passcode := generatePasscode()
 
-	// Upsert voter
-	_, err := db.Exec(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) VALUES (?, ?, ?, ?, NULL)
+	db.MustExecParams(
+		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) 
+		 VALUES (?, ?, ?, ?, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
-		req.CPF, req.Name, req.Phone, passcode,
+		1, 4,
+		[]sqinn.Value{
+			sqinn.StringValue(req.CPF),
+			sqinn.StringValue(req.Name),
+			sqinn.StringValue(req.Phone),
+			sqinn.StringValue(passcode),
+		},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
 
-	// PoC: log passcode to stdout instead of WhatsApp
 	fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", req.CPF, passcode, req.Phone)
-
 	respondJSON(w, http.StatusOK, map[string]string{"status": "passcode_sent"})
 }
 
@@ -224,100 +205,82 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Query voter
-	rows, err := db.Query(
+	rows, err := db.QueryRows(
 		`SELECT passcode FROM voters WHERE cpf = ?`,
-		req.CPF,
+		[]sqinn.Value{sqinn.StringValue(req.CPF)},
+		[]byte{sqinn.ValString},
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
-
-	if !rows.Next() {
+	if len(rows) == 0 {
 		respondError(w, http.StatusUnauthorized, "cpf not found")
 		return
 	}
 
-	var storedPasscode string
-	if err := rows.Scan(&storedPasscode); err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-
+	storedPasscode := rows[0][0].String
 	if storedPasscode != req.Passcode {
 		respondError(w, http.StatusUnauthorized, "wrong passcode")
 		return
 	}
 
-	// Set verified_at
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = db.Exec(
+	db.MustExecParams(
 		`UPDATE voters SET verified_at = ? WHERE cpf = ?`,
-		now, req.CPF,
+		1, 2,
+		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(req.CPF)},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"verified": true,
-		"cpf":      req.CPF,
-	})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"verified": true, "cpf": req.CPF})
 }
 
 // GET /polls
 func handleListPolls(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	rows, err := db.Query(
+	rows, err := db.QueryRows(
 		`SELECT id, title, type, start_date, end_date, created_at 
 		 FROM polls 
 		 WHERE start_date <= ? AND end_date >= ?
 		 ORDER BY created_at DESC`,
-		now, now,
+		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(now)},
+		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
 
 	var polls []Poll
-	for rows.Next() {
+	for _, row := range rows {
 		var p Poll
-		if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
+		p.ID = row[0].Int64
+		p.Title = row[1].String
+		p.Type = row[2].String
+		p.StartDate = row[3].String
+		p.EndDate = row[4].String
+		p.CreatedAt = row[5].String
 
-		// Get answers
-		arows, err := db.Query(
-			`SELECT id, poll_id, text, display_order 
-			 FROM answers 
-			 WHERE poll_id = ? 
-			 ORDER BY display_order ASC`,
-			p.ID,
+		arows, aerr := db.QueryRows(
+			`SELECT id, poll_id, text, display_order FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
+			[]sqinn.Value{sqinn.Int64Value(p.ID)},
+			[]byte{sqinn.ValInt64, sqinn.ValInt64, sqinn.ValString, sqinn.ValInt32},
 		)
-		if err != nil {
+		if aerr != nil {
 			respondError(w, http.StatusInternalServerError, "db error")
 			return
 		}
 
 		var answers []Answer
-		for arows.Next() {
-			var a Answer
-			if err := arows.Scan(&a.ID, &a.PollID, &a.Text, &a.DisplayOrder); err != nil {
-				arows.Close()
-				respondError(w, http.StatusInternalServerError, "db error")
-				return
-			}
-			answers = append(answers, a)
+		for _, arow := range arows {
+			answers = append(answers, Answer{
+				ID:           arow[0].Int64,
+				PollID:       arow[1].Int64,
+				Text:         arow[2].String,
+				DisplayOrder: int(arow[3].Int32),
+			})
 		}
-		arows.Close()
-
 		p.Answers = answers
 		polls = append(polls, p)
 	}
@@ -337,59 +300,49 @@ func handleGetPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(
-		`SELECT id, title, type, start_date, end_date, created_at 
-		 FROM polls 
-		 WHERE id = ?`,
-		id,
+	rows, err := db.QueryRows(
+		`SELECT id, title, type, start_date, end_date, created_at FROM polls WHERE id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(id)},
+		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
+	if err != nil || len(rows) == 0 {
 		respondError(w, http.StatusNotFound, "poll not found")
 		return
 	}
 
+	row := rows[0]
 	var p Poll
-	if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
+	p.ID = row[0].Int64
+	p.Title = row[1].String
+	p.Type = row[2].String
+	p.StartDate = row[3].String
+	p.EndDate = row[4].String
+	p.CreatedAt = row[5].String
 
-	// Check if poll is still active
 	if !isPollActive(p.StartDate, p.EndDate) {
 		respondError(w, http.StatusGone, "poll is no longer active")
 		return
 	}
 
-	// Get answers
-	arows, err := db.Query(
-		`SELECT id, poll_id, text, display_order 
-		 FROM answers 
-		 WHERE poll_id = ? 
-		 ORDER BY display_order ASC`,
-		id,
+	arows, err := db.QueryRows(
+		`SELECT id, poll_id, text, display_order FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
+		[]sqinn.Value{sqinn.Int64Value(p.ID)},
+		[]byte{sqinn.ValInt64, sqinn.ValInt64, sqinn.ValString, sqinn.ValInt32},
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer arows.Close()
 
 	var answers []Answer
-	for arows.Next() {
-		var a Answer
-		if err := arows.Scan(&a.ID, &a.PollID, &a.Text, &a.DisplayOrder); err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-		answers = append(answers, a)
+	for _, arow := range arows {
+		answers = append(answers, Answer{
+			ID:           arow[0].Int64,
+			PollID:       arow[1].Int64,
+			Text:         arow[2].String,
+			DisplayOrder: int(arow[3].Int32),
+		})
 	}
-
 	p.Answers = answers
 	respondJSON(w, http.StatusOK, p)
 }
@@ -409,81 +362,34 @@ func handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Insert poll
-	res, err := db.Exec(
-		`INSERT INTO polls (title, type, start_date, end_date, created_at) 
-		 VALUES (?, ?, ?, ?, ?)`,
-		req.Title, req.Type, req.StartDate, req.EndDate, now,
+	result := db.MustExecParams(
+		`INSERT INTO polls (title, type, start_date, end_date, created_at) VALUES (?, ?, ?, ?, ?)`,
+		1, 5,
+		[]sqinn.Value{
+			sqinn.StringValue(req.Title),
+			sqinn.StringValue(req.Type),
+			sqinn.StringValue(req.StartDate),
+			sqinn.StringValue(req.EndDate),
+			sqinn.StringValue(now),
+		},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
 
-	pollID := res.LastInsertRowid
+	pollID := result.LastInsertRowID
 
-	// Insert answers
 	for i, ans := range req.Answers {
-		_, err := db.Exec(
-			`INSERT INTO answers (poll_id, text, display_order) 
-			 VALUES (?, ?, ?)`,
-			pollID, ans.Text, i,
+		db.MustExecParams(
+			`INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
+			1, 3,
+			[]sqinn.Value{
+				sqinn.Int64Value(pollID),
+				sqinn.StringValue(ans.Text),
+				sqinn.Int32Value(int32(i)), // fixed: cast is already done
+			},
 		)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
 	}
 
-	// Fetch and return created poll
-	rows, err := db.Query(
-		`SELECT id, title, type, start_date, end_date, created_at 
-		 FROM polls 
-		 WHERE id = ?`,
-		pollID,
-	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		respondError(w, http.StatusInternalServerError, "failed to fetch created poll")
-		return
-	}
-
-	var p Poll
-	if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-
-	arows, err := db.Query(
-		`SELECT id, poll_id, text, display_order 
-		 FROM answers 
-		 WHERE poll_id = ? 
-		 ORDER BY display_order ASC`,
-		pollID,
-	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	defer arows.Close()
-
-	var answers []Answer
-	for arows.Next() {
-		var a Answer
-		if err := arows.Scan(&a.ID, &a.PollID, &a.Text, &a.DisplayOrder); err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-		answers = append(answers, a)
-	}
-
-	p.Answers = answers
-	respondJSON(w, http.StatusCreated, p)
+	// Return created poll
+	handleGetPoll(w, r)
 }
 
 // POST /polls/:id/vote
@@ -507,88 +413,70 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get poll
-	prows, err := db.Query(
-		`SELECT id, type, start_date, end_date FROM polls WHERE id = ?`,
-		pollID,
+	prows, err := db.QueryRows(
+		`SELECT type, start_date, end_date FROM polls WHERE id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValString, sqinn.ValString, sqinn.ValString},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	defer prows.Close()
-
-	if !prows.Next() {
+	if err != nil || len(prows) == 0 {
 		respondError(w, http.StatusNotFound, "poll not found")
 		return
 	}
 
-	var id int64
-	var pollType, startDate, endDate string
-	if err := prows.Scan(&id, &pollType, &startDate, &endDate); err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
+	row := prows[0]
+	pollType := row[0].String
+	startDate := row[1].String
+	endDate := row[2].String
 
-	// Check if poll is active
 	if !isPollActive(startDate, endDate) {
 		respondError(w, http.StatusGone, "poll is no longer active")
 		return
 	}
 
-	// Check poll type
 	if pollType == "radio" && len(req.AnswerIDs) > 1 {
 		respondError(w, http.StatusBadRequest, "radio poll accepts only one answer")
 		return
 	}
 
-	// Validate answer IDs exist in this poll
 	for _, ansID := range req.AnswerIDs {
-		arows, err := db.Query(
+		arows, err := db.QueryRows(
 			`SELECT id FROM answers WHERE id = ? AND poll_id = ?`,
-			ansID, pollID,
+			[]sqinn.Value{sqinn.Int64Value(ansID), sqinn.Int64Value(pollID)},
+			[]byte{sqinn.ValInt64},
 		)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
+		if err != nil || len(arows) == 0 {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("answer %d not found", ansID))
 			return
 		}
-		if !arows.Next() {
-			arows.Close()
-			respondError(w, http.StatusBadRequest, fmt.Sprintf("answer %d not found in poll", ansID))
-			return
-		}
-		arows.Close()
 	}
 
-	// Check if CPF already voted on this poll
-	vrows, err := db.Query(
+	vrows, err := db.QueryRows(
 		`SELECT id FROM votes WHERE poll_id = ? AND cpf = ?`,
-		pollID, req.CPF,
+		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(req.CPF)},
+		[]byte{sqinn.ValInt64},
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer vrows.Close()
-
-	if vrows.Next() {
-		respondError(w, http.StatusConflict, "cpf already voted on this poll")
+	if len(vrows) > 0 {
+		respondError(w, http.StatusConflict, "cpf already voted")
 		return
 	}
 
-	// Insert vote
 	answerIDsJSON, _ := json.Marshal(req.AnswerIDs)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	_, err = db.Exec(
-		`INSERT INTO votes (poll_id, cpf, answer_ids, voted_at) 
-		 VALUES (?, ?, ?, ?)`,
-		pollID, req.CPF, string(answerIDsJSON), now,
+	db.MustExecParams(
+		`INSERT INTO votes (poll_id, cpf, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
+		1, 4,
+		[]sqinn.Value{
+			sqinn.Int64Value(pollID),
+			sqinn.StringValue(req.CPF),
+			sqinn.StringValue(string(answerIDsJSON)),
+			sqinn.StringValue(now),
+		},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
 
 	respondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
 }
@@ -603,74 +491,57 @@ func handleResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get all answers for this poll
-	arows, err := db.Query(
+	arows, err := db.QueryRows(
 		`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
-		pollID,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValInt64, sqinn.ValString},
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer arows.Close()
 
 	answerMap := make(map[int64]ResultAnswer)
-	for arows.Next() {
-		var id int64
-		var text string
-		if err := arows.Scan(&id, &text); err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
+	for _, arow := range arows {
+		id := arow[0].Int64
+		text := arow[1].String
 		answerMap[id] = ResultAnswer{ID: id, Text: text, Votes: 0}
 	}
 
-	// Count votes for each answer
-	vrows, err := db.Query(
+	vrows, err := db.QueryRows(
 		`SELECT answer_ids FROM votes WHERE poll_id = ?`,
-		pollID,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValString},
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer vrows.Close()
 
-	for vrows.Next() {
-		var answerIDsJSON string
-		if err := vrows.Scan(&answerIDsJSON); err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-
-		var answerIDs []int64
-		if err := json.Unmarshal([]byte(answerIDsJSON), &answerIDs); err != nil {
-			respondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-
-		for _, ansID := range answerIDs {
-			if ans, ok := answerMap[ansID]; ok {
+	for _, vrow := range vrows {
+		var ids []int64
+		json.Unmarshal([]byte(vrow[0].String), &ids)
+		for _, id := range ids {
+			if ans, ok := answerMap[id]; ok {
 				ans.Votes++
-				answerMap[ansID] = ans
+				answerMap[id] = ans
 			}
 		}
 	}
 
-	// Build result
-	var resultAnswers []ResultAnswer
+	var results []ResultAnswer
 	for _, ans := range answerMap {
-		resultAnswers = append(resultAnswers, ans)
+		results = append(results, ans)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"poll_id": pollID,
-		"answers": resultAnswers,
+		"answers": results,
 	})
 }
 
 // ============================================================================
-// HTMX UI (POC frontend, served alongside the JSON API)
+// HTMX UI
 // ============================================================================
 
 var uiTemplates = template.Must(template.New("ui").Parse(`
@@ -780,7 +651,6 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 {{end}}
 `))
 
-// uiPageData is the single view-model shared by every UI fragment.
 type uiPageData struct {
 	Error   string
 	CPF     string
@@ -789,13 +659,12 @@ type uiPageData struct {
 	Results []ResultAnswer
 }
 
-// GET /
+// UI Handlers
 func handleUIIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	uiTemplates.ExecuteTemplate(w, "page", uiPageData{})
 }
 
-// POST /ui/request-passcode
 func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -809,21 +678,22 @@ func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	passcode := generatePasscode()
-	_, err := db.Exec(
+	db.MustExecParams(
 		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) VALUES (?, ?, ?, ?, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
-		cpf, name, phone, passcode,
+		1, 4,
+		[]sqinn.Value{
+			sqinn.StringValue(cpf),
+			sqinn.StringValue(name),
+			sqinn.StringValue(phone),
+			sqinn.StringValue(passcode),
+		},
 	)
-	if err != nil {
-		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "db error"})
-		return
-	}
 
 	fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", cpf, passcode, phone)
 	uiTemplates.ExecuteTemplate(w, "passcode_sent", uiPageData{})
 }
 
-// POST /ui/verify
 func handleUIVerify(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -835,70 +705,66 @@ func handleUIVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(`SELECT passcode FROM voters WHERE cpf = ?`, cpf)
+	rows, err := db.QueryRows(`SELECT passcode FROM voters WHERE cpf = ?`,
+		[]sqinn.Value{sqinn.StringValue(cpf)},
+		[]byte{sqinn.ValString},
+	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "db error"})
 		return
 	}
-	defer rows.Close()
-
-	if !rows.Next() {
+	if len(rows) == 0 {
 		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "cpf not found"})
 		return
 	}
-	var stored string
-	if err := rows.Scan(&stored); err != nil {
-		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "db error"})
-		return
-	}
-	if stored != passcode {
+
+	if rows[0][0].String != passcode {
 		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "wrong passcode"})
 		return
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`UPDATE voters SET verified_at = ? WHERE cpf = ?`, now, cpf); err != nil {
-		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "db error"})
-		return
-	}
+	db.MustExecParams(`UPDATE voters SET verified_at = ? WHERE cpf = ?`,
+		1, 2,
+		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(cpf)},
+	)
 
 	renderUIPolls(w, cpf, "")
 }
 
-// renderUIPolls fetches active polls and writes the "polls" fragment.
 func renderUIPolls(w http.ResponseWriter, cpf, errMsg string) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	rows, err := db.Query(
+	rows, err := db.QueryRows(
 		`SELECT id, title, type, start_date, end_date, created_at FROM polls 
 		 WHERE start_date <= ? AND end_date >= ? ORDER BY created_at DESC`,
-		now, now,
+		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(now)},
+		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
 	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
 		return
 	}
-	defer rows.Close()
 
 	var polls []Poll
-	for rows.Next() {
+	for _, row := range rows {
 		var p Poll
-		if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
-			uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-			return
-		}
+		p.ID = row[0].Int64
+		p.Title = row[1].String
+		p.Type = row[2].String
+		p.StartDate = row[3].String
+		p.EndDate = row[4].String
+		p.CreatedAt = row[5].String
 		polls = append(polls, p)
 	}
 
 	uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Polls: polls, Error: errMsg})
 }
 
-// GET /ui/polls
 func handleUIPolls(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	renderUIPolls(w, r.URL.Query().Get("cpf"), "")
 }
 
-// GET /ui/polls/{id}
 func handleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	cpf := r.URL.Query().Get("cpf")
@@ -910,55 +776,54 @@ func handleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(
-		`SELECT id, title, type, start_date, end_date, created_at FROM polls WHERE id = ?`, id,
+	rows, err := db.QueryRows(
+		`SELECT id, title, type, start_date, end_date, created_at FROM polls WHERE id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(id)},
+		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
 	)
-	if err != nil {
-		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
+	if err != nil || len(rows) == 0 {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "poll not found"})
 		return
 	}
 
+	row := rows[0]
 	var p Poll
-	if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
-		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
+	p.ID = row[0].Int64
+	p.Title = row[1].String
+	p.Type = row[2].String
+	p.StartDate = row[3].String
+	p.EndDate = row[4].String
+	p.CreatedAt = row[5].String
 
 	if !isPollActive(p.StartDate, p.EndDate) {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "poll is no longer active"})
 		return
 	}
 
-	arows, err := db.Query(
-		`SELECT id, poll_id, text, display_order FROM answers WHERE poll_id = ? ORDER BY display_order ASC`, id,
+	arows, err := db.QueryRows(
+		`SELECT id, poll_id, text, display_order FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
+		[]sqinn.Value{sqinn.Int64Value(p.ID)},
+		[]byte{sqinn.ValInt64, sqinn.ValInt64, sqinn.ValString, sqinn.ValInt32},
 	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
 		return
 	}
-	defer arows.Close()
 
 	var answers []Answer
-	for arows.Next() {
-		var a Answer
-		if err := arows.Scan(&a.ID, &a.PollID, &a.Text, &a.DisplayOrder); err != nil {
-			uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-			return
-		}
-		answers = append(answers, a)
+	for _, arow := range arows {
+		answers = append(answers, Answer{
+			ID:           arow[0].Int64,
+			PollID:       arow[1].Int64,
+			Text:         arow[2].String,
+			DisplayOrder: int(arow[3].Int32),
+		})
 	}
 	p.Answers = answers
 
 	uiTemplates.ExecuteTemplate(w, "poll_detail", uiPageData{CPF: cpf, Poll: p})
 }
 
-// POST /ui/polls/{id}/vote
 func handleUIVote(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -988,21 +853,19 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 		answerIDs = append(answerIDs, n)
 	}
 
-	prows, err := db.Query(`SELECT type, start_date, end_date FROM polls WHERE id = ?`, pollID)
-	if err != nil {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
-	defer prows.Close()
-	if !prows.Next() {
+	prows, err := db.QueryRows(`SELECT type, start_date, end_date FROM polls WHERE id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValString, sqinn.ValString, sqinn.ValString},
+	)
+	if err != nil || len(prows) == 0 {
 		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "poll not found"})
 		return
 	}
-	var pollType, startDate, endDate string
-	if err := prows.Scan(&pollType, &startDate, &endDate); err != nil {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
+
+	row := prows[0]
+	pollType := row[0].String
+	startDate := row[1].String
+	endDate := row[2].String
 
 	if !isPollActive(startDate, endDate) {
 		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "poll is no longer active"})
@@ -1014,45 +877,45 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, ansID := range answerIDs {
-		arows, err := db.Query(`SELECT id FROM answers WHERE id = ? AND poll_id = ?`, ansID, pollID)
-		if err != nil {
-			uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "db error"})
-			return
-		}
-		found := arows.Next()
-		arows.Close()
-		if !found {
+		arows, err := db.QueryRows(`SELECT id FROM answers WHERE id = ? AND poll_id = ?`,
+			[]sqinn.Value{sqinn.Int64Value(ansID), sqinn.Int64Value(pollID)},
+			[]byte{sqinn.ValInt64},
+		)
+		if err != nil || len(arows) == 0 {
 			uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "answer not found in poll"})
 			return
 		}
 	}
 
-	vrows, err := db.Query(`SELECT id FROM votes WHERE poll_id = ? AND cpf = ?`, pollID, cpf)
+	vrows, err := db.QueryRows(`SELECT id FROM votes WHERE poll_id = ? AND cpf = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(cpf)},
+		[]byte{sqinn.ValInt64},
+	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "db error"})
 		return
 	}
-	alreadyVoted := vrows.Next()
-	vrows.Close()
-	if alreadyVoted {
+	if len(vrows) > 0 {
 		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "cpf already voted on this poll"})
 		return
 	}
 
 	answerIDsJSON, _ := json.Marshal(answerIDs)
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(
+	db.MustExecParams(
 		`INSERT INTO votes (poll_id, cpf, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
-		pollID, cpf, string(answerIDsJSON), now,
-	); err != nil {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
+		1, 4,
+		[]sqinn.Value{
+			sqinn.Int64Value(pollID),
+			sqinn.StringValue(cpf),
+			sqinn.StringValue(string(answerIDsJSON)),
+			sqinn.StringValue(now),
+		},
+	)
 
 	uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf})
 }
 
-// GET /ui/polls/{id}/results
 func handleUIResults(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	cpf := r.URL.Query().Get("cpf")
@@ -1065,58 +928,54 @@ func handleUIResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prows, err := db.Query(`SELECT id, title, type, start_date, end_date, created_at FROM polls WHERE id = ?`, pollID)
-	if err != nil {
-		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
-	defer prows.Close()
-	if !prows.Next() {
+	prows, err := db.QueryRows(`SELECT id, title, type, start_date, end_date, created_at FROM polls WHERE id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
+	)
+	if err != nil || len(prows) == 0 {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "poll not found"})
 		return
 	}
-	var p Poll
-	if err := prows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
-		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
 
-	arows, err := db.Query(`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`, pollID)
+	row := prows[0]
+	var p Poll
+	p.ID = row[0].Int64
+	p.Title = row[1].String
+	p.Type = row[2].String
+	p.StartDate = row[3].String
+	p.EndDate = row[4].String
+	p.CreatedAt = row[5].String
+
+	arows, err := db.QueryRows(`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValInt64, sqinn.ValString},
+	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
 		return
 	}
-	defer arows.Close()
 
 	answerMap := make(map[int64]*ResultAnswer)
 	var order []int64
-	for arows.Next() {
-		var id int64
-		var text string
-		if err := arows.Scan(&id, &text); err != nil {
-			uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-			return
-		}
-		answerMap[id] = &ResultAnswer{ID: id, Text: text}
+	for _, arow := range arows {
+		id := arow[0].Int64
+		text := arow[1].String
+		answerMap[id] = &ResultAnswer{ID: id, Text: text, Votes: 0}
 		order = append(order, id)
 	}
 
-	vrows, err := db.Query(`SELECT answer_ids FROM votes WHERE poll_id = ?`, pollID)
+	vrows, err := db.QueryRows(`SELECT answer_ids FROM votes WHERE poll_id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValString},
+	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
 		return
 	}
-	defer vrows.Close()
-	for vrows.Next() {
-		var answerIDsJSON string
-		if err := vrows.Scan(&answerIDsJSON); err != nil {
-			uiTemplates.ExecuteTemplate(w, "polls", uiPageData{CPF: cpf, Error: "db error"})
-			return
-		}
+
+	for _, vrow := range vrows {
 		var ids []int64
-		if err := json.Unmarshal([]byte(answerIDsJSON), &ids); err != nil {
-			continue
-		}
+		json.Unmarshal([]byte(vrow[0].String), &ids)
 		for _, id := range ids {
 			if a, ok := answerMap[id]; ok {
 				a.Votes++
@@ -1126,7 +985,9 @@ func handleUIResults(w http.ResponseWriter, r *http.Request) {
 
 	var results []ResultAnswer
 	for _, id := range order {
-		results = append(results, *answerMap[id])
+		if a, ok := answerMap[id]; ok {
+			results = append(results, *a)
+		}
 	}
 
 	uiTemplates.ExecuteTemplate(w, "results", uiPageData{CPF: cpf, Poll: p, Results: results})
@@ -1152,6 +1013,23 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleVote(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/polls/") && strings.HasSuffix(r.URL.Path, "/results"):
 		handleResults(w, r)
+
+	// UI Routes
+	case r.Method == http.MethodGet && r.URL.Path == "/":
+		handleUIIndex(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/ui/request-passcode":
+		handleUIRequestPasscode(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/ui/verify":
+		handleUIVerify(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/polls":
+		handleUIPolls(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/ui/polls/") && !strings.Contains(r.URL.Path, "/vote") && !strings.Contains(r.URL.Path, "/results"):
+		handleUIPollDetail(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/ui/polls/") && strings.HasSuffix(r.URL.Path, "/vote"):
+		handleUIVote(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/ui/polls/") && strings.HasSuffix(r.URL.Path, "/results"):
+		handleUIResults(w, r)
+
 	default:
 		respondError(w, http.StatusNotFound, "endpoint not found")
 	}
@@ -1162,15 +1040,11 @@ func router(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func main() {
-	var err error
-	db, err = sqinn.Open("votes.db")
-	if err != nil {
-		log.Fatalf("failed to open db: %v", err)
-	}
+	db = sqinn.MustLaunch(sqinn.Options{Db: "votes.db"})
 	defer db.Close()
 
 	if err := initDB(); err != nil {
-		log.Fatalf("failed to init db: %v", err)
+		log.Fatalf("init db failed: %v", err)
 	}
 
 	http.HandleFunc("/", router)
@@ -1184,6 +1058,7 @@ func main() {
 	fmt.Println("  GET    /polls/{id}              - Get poll details")
 	fmt.Println("  POST   /polls/{id}/vote         - Submit vote")
 	fmt.Println("  GET    /polls/{id}/results      - View poll results")
+	fmt.Println("\nUI available at http://localhost:8080")
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("server error: %v", err)
