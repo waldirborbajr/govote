@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -134,6 +135,12 @@ func generatePasscode() string {
 	return fmt.Sprintf("%04d", val)
 }
 
+func buildWhatsAppURL(phone, passcode string) string {
+	text := fmt.Sprintf("Your voting passcode is: %s\n\nDo not share this code with anyone.", passcode)
+	encodedText := url.QueryEscape(text)
+	return fmt.Sprintf("https://wa.me/%s?text=%s", phone, encodedText)
+}
+
 func isPollActive(startDate, endDate string) bool {
 	now := time.Now().UTC()
 	start, err1 := time.Parse(time.RFC3339, startDate)
@@ -188,8 +195,16 @@ func handleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
+	whatsappURL := buildWhatsAppURL(req.Phone, passcode)
+
 	fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", req.CPF, passcode, req.Phone)
-	respondJSON(w, http.StatusOK, map[string]string{"status": "passcode_sent"})
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":       "passcode_generated",
+		"passcode":     passcode, // only for testing
+		"whatsapp_url": whatsappURL,
+		"message":      "Click the link to send via WhatsApp",
+	})
 }
 
 // POST /auth/verify
