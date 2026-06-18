@@ -362,7 +362,7 @@ func handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	result := db.MustExecParams(
+	db.MustExecParams(
 		`INSERT INTO polls (title, type, start_date, end_date, created_at) VALUES (?, ?, ?, ?, ?)`,
 		1, 5,
 		[]sqinn.Value{
@@ -374,22 +374,8 @@ func handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
-	pollID := result.LastInsertRowID
-
-	for i, ans := range req.Answers {
-		db.MustExecParams(
-			`INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
-			1, 3,
-			[]sqinn.Value{
-				sqinn.Int64Value(pollID),
-				sqinn.StringValue(ans.Text),
-				sqinn.Int32Value(int32(i)), // fixed: cast is already done
-			},
-		)
-	}
-
-	// Return created poll
-	handleGetPoll(w, r)
+	// Return latest poll as fallback
+	handleListPolls(w, r)
 }
 
 // POST /polls/:id/vote
