@@ -242,13 +242,13 @@ func handleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 
 	whatsappURL := buildWhatsAppURL(req.Phone, passcode)
 
-	fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", req.CPF, passcode, req.Phone)
+	// fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", req.CPF, passcode, req.Phone)
+	fmt.Printf("[PoC] CPF %s passcode: %s\n", req.CPF, passcode)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":       "passcode_generated",
-		"passcode":     passcode, // only for testing
 		"whatsapp_url": whatsappURL,
-		"message":      "Click the link to send via WhatsApp",
+		"message":      "Clique no link abaixo para abrir o WhatsApp:",
 	})
 }
 
@@ -790,6 +790,16 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 </div>
 {{end}}
 
+{{define "passcode_sent"}}
+<div class="card bg-base-100 shadow-xl p-8 text-center space-y-4">
+  <h2 class="text-2xl font-bold text-success">Código Gerado!</h2>
+  <p>Para concluir, clique no botão abaixo e envie o código pelo WhatsApp.</p>
+  <a href="{{.WhatsAppURL}}" target="_blank" class="btn btn-primary btn-lg w-full">
+    Abrir WhatsApp
+  </a>
+</div>
+{{end}}
+
 `))
 
 
@@ -1155,6 +1165,8 @@ func handleUICreatePoll(w http.ResponseWriter, r *http.Request) {
 
     renderUIPolls(w, "", "Enquete publicada com sucesso!")
 }
+
+
 
 func handleUIResults(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
