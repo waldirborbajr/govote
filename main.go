@@ -1035,7 +1035,22 @@ func handleUIRequestPasscodeForm(w http.ResponseWriter, r *http.Request) {
 
 func handleUIAdmin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	uiTemplates.ExecuteTemplate(w, "admin_dashboard", uiPageData{})
+
+	// Verifica se já está logado
+	cookie, err := r.Cookie("admin_token")
+	if err != nil || cookie.Value == "" {
+		// Não está logado → mostrar tela de login
+		uiTemplates.ExecuteTemplate(w, "admin_login", uiPageData{})
+		return
+	}
+
+	// Valida o token (simplificado por enquanto)
+	if _, valid := validateJWT(cookie.Value); valid {
+		uiTemplates.ExecuteTemplate(w, "admin_dashboard", uiPageData{})
+	} else {
+		// Token inválido → forçar login novamente
+		uiTemplates.ExecuteTemplate(w, "admin_login", uiPageData{Error: "Sessão expirada. Faça login novamente."})
+	}
 }
 
 func handleUIAdminPolls(w http.ResponseWriter, r *http.Request) {
@@ -1487,9 +1502,10 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST Login
+// POST Login
 func handleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	username := r.FormValue("username")
+	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 
 	if username != "admin" {
@@ -1498,7 +1514,8 @@ func handleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, _ := db.QueryRows(`SELECT password_hash, needs_change FROM admin WHERE username = ?`,
-		[]sqinn.Value{sqinn.StringValue(username)}, []byte{sqinn.ValString, sqinn.ValInt64})
+		[]sqinn.Value{sqinn.StringValue(username)}, 
+		[]byte{sqinn.ValString, sqinn.ValInt64})
 
 	if len(rows) == 0 || !checkPassword(rows[0][0].String, password) {
 		uiTemplates.ExecuteTemplate(w, "admin_login", uiPageData{Error: "Senha incorreta"})
@@ -1514,6 +1531,7 @@ func handleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400,
 		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	if needsChange {
@@ -1521,7 +1539,7 @@ func handleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handleUIAdmin(w, r)
+	handleUIAdmin(w, r) // Redireciona para dashboard
 }
 
 // Change Password
@@ -1577,6 +1595,8 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleUIRequestPasscode(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/verify":
 		handleUIVerify(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/login":
+		handleAdminLoginPost(w, r)		
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin":
 		handleUIAdmin(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin/polls":
