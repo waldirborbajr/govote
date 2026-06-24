@@ -718,7 +718,70 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <button hx-get="/ui/polls?cpf={{.CPF}}" hx-target="#app" class="btn btn-ghost w-full">Voltar</button>
 </div>
 {{end}}
+
+{{define "create_poll"}}
+<div class="card bg-base-100 shadow-xl p-6 max-w-lg mx-auto">
+  <h2 class="text-2xl font-bold mb-6 text-primary">Criar Nova Enquete</h2>
+  <form hx-post="/ui/polls/create" hx-target="#app" class="space-y-4">
+    <div class="form-control">
+      <label class="label"><span class="label-text">Título</span></label>
+      <input name="title" placeholder="Ex: Votação da CIPA" class="input input-bordered w-full" required>
+    </div>
+    
+    <div class="grid grid-cols-2 gap-4">
+      <div class="form-control">
+        <label class="label"><span class="label-text">Início</span></label>
+        <input name="start_date" type="datetime-local" class="input input-bordered" required>
+      </div>
+      <div class="form-control">
+        <label class="label"><span class="label-text">Fim</span></label>
+        <input name="end_date" type="datetime-local" class="input input-bordered" required>
+      </div>
+    </div>
+
+    <div class="form-control">
+      <label class="label"><span class="label-text">Tipo</span></label>
+      <select name="type" class="select select-bordered w-full">
+        <option value="radio">Seleção Única</option>
+        <option value="checkbox">Múltipla Escolha</option>
+      </select>
+    </div>
+
+    <label class="label cursor-pointer justify-start gap-4">
+      <input type="checkbox" name="allow_blank" class="checkbox checkbox-primary" value="true">
+      <span class="label-text">Permitir voto em branco</span>
+    </label>
+
+    <div class="form-control">
+      <label class="label"><span class="label-text">Opções (uma por linha)</span></label>
+      <textarea name="answers" class="textarea textarea-bordered h-24" required></textarea>
+    </div>
+    
+    <button type="submit" class="btn btn-primary w-full mt-4">Publicar Enquete</button>
+  </form>
+</div>
+{{end}}
+
+{{define "polls"}}
+<div class="space-y-4">
+  <h2 class="text-2xl font-bold">Enquetes Ativas</h2>
+  
+  {{/* Mostra o botão apenas se o usuário for admin */}}
+  {{if .IsAdmin}}
+    <a href="/ui/polls/create" class="btn btn-primary mb-4">Nova Enquete</a>
+  {{end}}
+
+  <ul class="space-y-2">
+    {{range .Polls}}
+    <li><button hx-get="/ui/polls/{{.ID}}?cpf={{$.CPF}}" class="btn btn-outline btn-block">{{.Title}}</button></li>
+    {{end}}
+  </ul>
+</div>
+{{end}}
+
 `))
+
+
 
 type uiPageData struct {
 	Error   string
@@ -1022,6 +1085,42 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
     })
 }
 
+func handleUICreatePoll(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+        return
+    }
+
+    r.ParseForm()
+    title := r.FormValue("title")
+    pType := r.FormValue("type")
+    startDate := r.FormValue("start_date")
+    endDate := r.FormValue("end_date")
+    allowBlank := r.FormValue("allow_blank") == "true"
+    answersRaw := strings.Split(r.FormValue("answers"), "\n")
+
+    // Persistência (mantendo a estrutura de sucesso de escrita)
+    db.MustExecParams(
+        `INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        1, 6,
+        []sqinn.Value{
+            sqinn.StringValue(title),
+            sqinn.StringValue(pType),
+            sqinn.StringValue(startDate),
+            sqinn.StringValue(endDate),
+            sqinn.Int64Value(boolToInt(allowBlank)),
+            sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
+        },
+    )
+
+    // Log de auditoria
+    logAction("POLL_CREATED", title)
+    
+    // Redireciona para listar enquetes após criar
+    renderUIPolls(w, "", "Enquete publicada com sucesso!")
+}
+}
+
 func handleUIResults(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	cpf := r.URL.Query().Get("cpf")
@@ -1137,6 +1236,14 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleUIVote(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/ui/polls/") && strings.HasSuffix(r.URL.Path, "/results"):
 		handleUIResults(w, r)
+	case r.URL.Path == "/ui/polls/create" && r.Method == http.MethodGet:
+		// Simples verificação de segurança (Substitua pela sua lógica de Auth)
+		if r.Header.Get("X-Admin-Token") != "seu-segredo-aqui" {
+			respondError(w, http.StatusForbidden, "Acesso restrito a administradores")
+			return
+		}
+		// Renderiza o template de criação
+		uiTemplates.ExecuteTemplate(w, "page", map[string]interface{}{"Content": "create_poll"})
 
 	default:
 		respondError(w, http.StatusNotFound, "endpoint not found")
