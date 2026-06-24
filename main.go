@@ -2,6 +2,10 @@ package main
 
 import (
 	"crypto/sha256"
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
 	"encoding/hex"
 	"encoding/json"
 	"math/rand"
@@ -12,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	sqinn "github.com/cvilsmeier/sqinn-go/v2"
@@ -92,6 +97,18 @@ type AdminChangePassReq struct {
 }
 
 var jwtSecret = []byte("super-secret-jwt-key-change-in-production-2026") // Em prod use env var
+
+// Rate Limiting
+type RateLimiter struct {
+	visits sync.Map // IP -> []time.Time
+}
+
+var rateLimiter = &RateLimiter{}
+
+const (
+	maxRequestsPerMinute = 10  // Ajuste conforme necessidade
+	windowDuration       = 60 * time.Second
+)
 
 // ============================================================================
 // GLOBAL DB & CONFIG
@@ -288,6 +305,63 @@ func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func respondError(w http.ResponseWriter, status int, message string) {
 	respondJSON(w, status, map[string]string{"error": message})
+}
+
+// isRateLimited verifica se o IP excedeu o limite
+func isRateLimited(ip string) bool {
+	now := time.Now()
+	var times []time.Time
+
+	if val, ok := rateLimiter.visits.Load(ip); ok {
+		times = val.([]time.Time)
+	}
+
+	// Limpa requests antigos
+	var validTimes []time.Time
+	for _, t := range times {
+		if now.Sub(t) < windowDuration {
+			validTimes = append(validTimes, t)
+		}
+	}
+
+	if len(validTimes) >= maxRequestsPerMinute {
+		rateLimiter.visits.Store(ip, validTimes)
+		return true
+	}
+
+	validTimes = append(validTimes, now)
+	rateLimiter.visits.Store(ip, validTimes)
+	return false
+}
+
+// getClientIP extrai IP do request
+func getClientIP(r *http.Request) string {
+	ip := r.Header.Get("X-Forwarded-For")
+	if ip == "" {
+		ip = r.Header.Get("X-Real-IP")
+	}
+	if ip == "" {
+		ip = r.RemoteAddr
+	}
+	// Remove porta se existir
+	if idx := strings.LastIndex(ip, ":"); idx != -1 {
+		ip = ip[:idx]
+	}
+	return ip
+}
+
+// rateLimitMiddleware aplica rate limiting
+func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := getClientIP(r)
+
+		if isRateLimited(ip) {
+			respondError(w, http.StatusTooManyRequests, "Muitas requisições. Aguarde um momento.")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
 }
 
 // ============================================================================
@@ -1567,9 +1641,9 @@ func handleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 func router(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/auth/request-passcode":
-		handleRequestPasscode(w, r)
+		rateLimitMiddleware(handleRequestPasscode)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/auth/verify":
-		handleVerify(w, r)
+		rateLimitMiddleware(handleVerify)(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/polls":
 		handleListPolls(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/polls":
@@ -1577,7 +1651,7 @@ func router(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/polls/") && !strings.Contains(r.URL.Path, "/vote") && !strings.Contains(r.URL.Path, "/results"):
 		handleGetPoll(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/polls/") && strings.HasSuffix(r.URL.Path, "/vote"):
-		handleVote(w, r)
+		rateLimitMiddleware(handleVote)(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/polls/") && strings.HasSuffix(r.URL.Path, "/results"):
 		handleResults(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/admin/stats":
@@ -1592,11 +1666,11 @@ func router(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/request-passcode-form":
 		handleUIRequestPasscodeForm(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/request-passcode":
-		handleUIRequestPasscode(w, r)
+		rateLimitMiddleware(handleUIRequestPasscode)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/verify":
-		handleUIVerify(w, r)
+		rateLimitMiddleware(handleUIVerify)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/login":
-		handleAdminLoginPost(w, r)		
+		rateLimitMiddleware(handleAdminLoginPost)(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin":
 		handleUIAdmin(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin/polls":
@@ -1627,31 +1701,55 @@ func router(w http.ResponseWriter, r *http.Request) {
 // MAIN
 // ============================================================================
 
+// ============================================================================
+// MAIN
+// ============================================================================
+
 func main() {
-    db = sqinn.MustLaunch(sqinn.Options{Db: "votes.db"})
-    defer db.Close()
+	db = sqinn.MustLaunch(sqinn.Options{Db: "votes.db"})
+	defer db.Close()
 
-    if err := initDB(); err != nil {
-        log.Fatalf("init db failed: %v", err)
-    }
-
-    http.HandleFunc("/", router)
-
-    // TUDO ISSO DEVE FICAR DENTRO DE main()
-    fmt.Println("Vote API starting on :8080")
-    fmt.Println("Endpoints:")
-    fmt.Println("  POST   /auth/request-passcode  - Request voting passcode")
-    fmt.Println("  POST   /auth/verify             - Verify CPF + passcode")
-    fmt.Println("  POST   /polls                   - Create poll (admin)")
-    fmt.Println("  GET    /polls                   - List active polls")
-    fmt.Println("  GET    /polls/{id}              - Get poll details")
-    fmt.Println("  POST   /polls/{id}/vote         - Submit vote")
-    fmt.Println("  GET    /polls/{id}/results      - View poll results")
-    fmt.Println("  GET    /admin/stats             - Get real-time voting analytics")
-
-	fmt.Println("\nUI available at http://localhost:8080")
-
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatalf("server error: %v", err)
+	if err := initDB(); err != nil {
+		log.Fatalf("init db failed: %v", err)
 	}
+
+	srv := &http.Server{
+		Addr:         ":8080",
+		Handler:      http.HandlerFunc(router),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Canal para capturar sinais (Ctrl+C, kill, etc.)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		fmt.Println("🚀 Vote API iniciada em http://localhost:8080")
+		fmt.Println("   Pressione Ctrl+C para encerrar gracefulmente.")
+
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("❌ Server error: %v", err)
+		}
+	}()
+
+	// Aguarda sinal de shutdown
+	<-stop
+	fmt.Println("\n\n🛑 Sinal de shutdown recebido. Iniciando encerramento graceful...")
+
+	// Contexto com timeout generoso (dá tempo para requisições terminarem)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Shutdown graceful: espera conexões ativas terminarem
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("⚠️  Erro durante shutdown: %v", err)
+	} else {
+		fmt.Println("✅ Servidor encerrado com sucesso (todas as sessões ativas foram finalizadas)")
+	}
+
+	// Fechar banco de dados
+	fmt.Println("💾 Banco de dados fechado.")
 }
+
