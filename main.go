@@ -823,6 +823,34 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  
+  <!-- Input Masks -->
+  <script>
+    function formatCPF(input) {
+      let v = input.value.replace(/\D/g, '');
+      v = v.replace(/(\d{3})(\d)/, '$1.$2');
+      v = v.replace(/(\d{3})(\d)/, '$1.$2');
+      v = v.replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+      input.value = v.substring(0, 14);
+    }
+
+    function formatPhone(input) {
+      let v = input.value.replace(/\D/g, '');
+      if (v.length > 11) v = v.substring(0, 11);
+      if (v.length <= 10) {
+        v = v.replace(/(\d{2})(\d)/, '($1) $2');
+        v = v.replace(/(\d{4})(\d)/, '$1-$2');
+      } else {
+        v = v.replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
+      }
+      input.value = v;
+    }
+
+    // Extrai apenas números do telefone
+    function getCleanPhone(phoneInput) {
+      return phoneInput.value.replace(/\D/g, '');
+    }
+  </script>
 </head>
 <body class="bg-base-200 min-h-screen p-4 md:p-8">
   <div class="max-w-3xl mx-auto bg-base-100 p-8 rounded-3xl shadow-2xl">
@@ -937,12 +965,39 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 <div class="grid gap-8">
   <form hx-post="/ui/request-passcode" hx-target="#app" hx-swap="innerHTML" class="card bg-base-200 p-6 space-y-4">
     <h2 class="text-xl font-bold">1. Solicitar Acesso</h2>
-    <input name="cpf" placeholder="CPF" class="input input-bordered w-full" required>
-    <input name="name" placeholder="Nome" class="input input-bordered w-full" required>
-    <input name="phone" placeholder="WhatsApp (55...)" class="input input-bordered w-full" required>
+    
+    <div class="form-control">
+      <label class="label"><span class="label-text">CPF</span></label>
+      <input name="cpf" id="cpf" placeholder="000.000.000-00" 
+             class="input input-bordered w-full" maxlength="14" 
+             onkeyup="formatCPF(this)" required>
+    </div>
+
+    <div class="form-control">
+      <label class="label"><span class="label-text">Nome Completo</span></label>
+      <input name="name" placeholder="Nome" class="input input-bordered w-full" required>
+    </div>
+
+    <div class="form-control">
+      <label class="label"><span class="label-text">Celular (com DDD)</span></label>
+      <div class="join w-full">
+        <select name="country_code" class="select select-bordered join-item w-28">
+          <option value="55" selected>Brasil (+55)</option>
+          <option value="1">EUA/Canadá (+1)</option>
+          <option value="351">Portugal (+351)</option>
+          <option value="34">Espanha (+34)</option>
+          <!-- Adicione mais países conforme necessário -->
+        </select>
+        <input name="phone" id="phone" placeholder="(11) 98765-4321" 
+               class="input input-bordered join-item flex-1" 
+               onkeyup="formatPhone(this)" maxlength="15" required>
+      </div>
+    </div>
+
     <button class="btn btn-primary w-full">Gerar Código de Acesso</button>
   </form>
   
+  <!-- Form de verificar permanece igual -->
   <form hx-post="/ui/verify" hx-target="#app" hx-swap="innerHTML" class="card bg-base-200 p-6 space-y-4">
     <h2 class="text-xl font-bold">2. Verificar</h2>
     <input name="cpf" placeholder="CPF" class="input input-bordered w-full" required>
@@ -1136,12 +1191,24 @@ func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
 
-	cpf := strings.TrimSpace(r.FormValue("cpf"))
+	cpfRaw := strings.TrimSpace(r.FormValue("cpf"))
 	name := strings.TrimSpace(r.FormValue("name"))
-	phone := strings.TrimSpace(r.FormValue("phone"))
+	countryCode := strings.TrimSpace(r.FormValue("country_code"))
+	phoneRaw := strings.TrimSpace(r.FormValue("phone"))
 
-	if cpf == "" || name == "" || phone == "" {
-		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "cpf, name, phone required"})
+	if cpfRaw == "" || name == "" || phoneRaw == "" {
+		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "cpf, nome e telefone são obrigatórios"})
+		return
+	}
+
+	// Limpa formatação
+	cpf := strings.ReplaceAll(strings.ReplaceAll(cpfRaw, ".", ""), "-", "")
+	phone := countryCode + strings.ReplaceAll(strings.ReplaceAll(phoneRaw, "(", ""), ")", "")
+	phone = strings.ReplaceAll(phone, "-", "")
+	phone = strings.ReplaceAll(phone, " ", "")
+
+	if len(cpf) != 11 {
+		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "CPF inválido"})
 		return
 	}
 
@@ -1160,12 +1227,10 @@ func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
-	// === CORREÇÃO AQUI ===
 	whatsappURL := buildWhatsAppURL(phone, passcode)
 
-	fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", cpf, passcode, phone)
+	fmt.Printf("[PoC] CPF %s | Phone %s | Passcode %s\n", cpf, phone, passcode)
 
-	// Passa os dados necessários para o template
 	uiTemplates.ExecuteTemplate(w, "passcode_sent", uiPageData{
 		WhatsAppURL: whatsappURL,
 	})
