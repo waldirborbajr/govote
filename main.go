@@ -133,6 +133,7 @@ func initDB() error {
 			type TEXT NOT NULL,
 			start_date TEXT NOT NULL,
 			end_date TEXT NOT NULL,
+			allow_blank INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS answers (
@@ -421,18 +422,41 @@ func handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-db.MustExecParams(
-	`INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-	1, 6,
-	[]sqinn.Value{
-		sqinn.StringValue(req.Title),
-		sqinn.StringValue(req.Type),
-		sqinn.StringValue(req.StartDate),
-		sqinn.StringValue(req.EndDate),
-		sqinn.Int64Value(boolToInt(req.AllowBlank)),
-		sqinn.StringValue(now),
-	},
-)
+	db.MustExecParams(
+		`INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		1, 6,
+		[]sqinn.Value{
+			sqinn.StringValue(req.Title),
+			sqinn.StringValue(req.Type),
+			sqinn.StringValue(req.StartDate),
+			sqinn.StringValue(req.EndDate),
+			sqinn.Int64Value(boolToInt(req.AllowBlank)),
+			sqinn.StringValue(now),
+		},
+	)
+
+	// Retrieve the last inserted poll ID
+	rows, _ := db.QueryRows("SELECT id FROM polls ORDER BY id DESC LIMIT 1", nil, []byte{sqinn.ValInt64})
+	if len(rows) == 0 {
+		respondError(w, http.StatusInternalServerError, "error retrieving poll id")
+		return
+	}
+	lastInsertID := rows[0][0].Int64
+
+	for i, answer := range req.Answers {
+		text := strings.TrimSpace(answer.Text)
+		if text == "" { continue }
+		
+		db.MustExecParams(
+			`INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
+			1, 3,
+			[]sqinn.Value{
+				sqinn.Int64Value(lastInsertID),
+				sqinn.StringValue(text),
+				sqinn.Int64Value(int64(i)),
+			},
+		)
+	}
 
 	// Return latest poll as fallback
 	handleListPolls(w, r)
@@ -671,19 +695,6 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
     <input name="passcode" placeholder="Passcode" class="input input-bordered w-full" required>
     <button class="btn btn-secondary w-full">Entrar</button>
   </form>
-</div>
-{{end}}
-
-{{define "polls"}}
-<div class="space-y-4">
-  <div class="alert alert-info">Logado como CPF: {{.CPF}}</div>
-  <h2 class="text-2xl font-bold">Enquetes Ativas</h2>
-  {{if not .Polls}}<p class="text-gray-500">Nenhuma enquete disponível.</p>{{end}}
-  <ul class="space-y-2">
-    {{range .Polls}}
-    <li><button hx-get="/ui/polls/{{.ID}}?cpf={{$.CPF}}" hx-target="#app" class="btn btn-outline btn-block justify-start">{{.Title}}</button></li>
-    {{end}}
-  </ul>
 </div>
 {{end}}
 
@@ -1091,15 +1102,19 @@ func handleUICreatePoll(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    // 1. Parse do formulário
     r.ParseForm()
+
+    // 2. Declaração de todas as variáveis necessárias
     title := r.FormValue("title")
     pType := r.FormValue("type")
     startDate := r.FormValue("start_date")
     endDate := r.FormValue("end_date")
     allowBlank := r.FormValue("allow_blank") == "true"
     answersRaw := strings.Split(r.FormValue("answers"), "\n")
+    now := time.Now().UTC().Format(time.RFC3339) // 'now' declarado e usado aqui
 
-    // Persistência (mantendo a estrutura de sucesso de escrita)
+    // 3. Inserção da Enquete
     db.MustExecParams(
         `INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
         1, 6,
@@ -1109,16 +1124,36 @@ func handleUICreatePoll(w http.ResponseWriter, r *http.Request) {
             sqinn.StringValue(startDate),
             sqinn.StringValue(endDate),
             sqinn.Int64Value(boolToInt(allowBlank)),
-            sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
+            sqinn.StringValue(now),
         },
     )
 
-    // Log de auditoria
-    logAction("POLL_CREATED", title)
-    
-    // Redireciona para listar enquetes após criar
+    // 4. Recuperação do lastInsertID para associar as respostas
+    rows, _ := db.QueryRows("SELECT id FROM polls ORDER BY id DESC LIMIT 1", nil, []byte{sqinn.ValInt64})
+    if len(rows) == 0 {
+        respondError(w, http.StatusInternalServerError, "error retrieving poll id")
+        return
+    }
+    lastInsertID := rows[0][0].Int64
+
+    // 5. Loop que utiliza answersRaw e lastInsertID
+    for i, text := range answersRaw {
+        text = strings.TrimSpace(text)
+        if text == "" {
+            continue
+        }
+        db.MustExecParams(
+            `INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
+            1, 3,
+            []sqinn.Value{
+                sqinn.Int64Value(lastInsertID),
+                sqinn.StringValue(text),
+                sqinn.Int64Value(int64(i)),
+            },
+        )
+    }
+
     renderUIPolls(w, "", "Enquete publicada com sucesso!")
-}
 }
 
 func handleUIResults(w http.ResponseWriter, r *http.Request) {
@@ -1220,7 +1255,6 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleResults(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/admin/stats":
     	handleAdminStats(w, r)
-
 	// UI Routes
 	case r.Method == http.MethodGet && r.URL.Path == "/":
 		handleUIIndex(w, r)
@@ -1255,25 +1289,27 @@ func router(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func main() {
-	db = sqinn.MustLaunch(sqinn.Options{Db: "votes.db"})
-	defer db.Close()
+    db = sqinn.MustLaunch(sqinn.Options{Db: "votes.db"})
+    defer db.Close()
 
-	if err := initDB(); err != nil {
-		log.Fatalf("init db failed: %v", err)
-	}
+    if err := initDB(); err != nil {
+        log.Fatalf("init db failed: %v", err)
+    }
 
-	http.HandleFunc("/", router)
+    http.HandleFunc("/", router)
 
-fmt.Println("Vote API starting on :8080")
-	fmt.Println("Endpoints:")
-	fmt.Println("  POST   /auth/request-passcode  - Request voting passcode")
-	fmt.Println("  POST   /auth/verify             - Verify CPF + passcode")
-	fmt.Println("  POST   /polls                   - Create poll (admin)")
-	fmt.Println("  GET    /polls                   - List active polls")
-	fmt.Println("  GET    /polls/{id}              - Get poll details")
-	fmt.Println("  POST   /polls/{id}/vote         - Submit vote")
-	fmt.Println("  GET    /polls/{id}/results      - View poll results")
-	fmt.Println("  GET    /admin/stats             - Get real-time voting analytics")
+    // TUDO ISSO DEVE FICAR DENTRO DE main()
+    fmt.Println("Vote API starting on :8080")
+    fmt.Println("Endpoints:")
+    fmt.Println("  POST   /auth/request-passcode  - Request voting passcode")
+    fmt.Println("  POST   /auth/verify             - Verify CPF + passcode")
+    fmt.Println("  POST   /polls                   - Create poll (admin)")
+    fmt.Println("  GET    /polls                   - List active polls")
+    fmt.Println("  GET    /polls/{id}              - Get poll details")
+    fmt.Println("  POST   /polls/{id}/vote         - Submit vote")
+    fmt.Println("  GET    /polls/{id}/results      - View poll results")
+    fmt.Println("  GET    /admin/stats             - Get real-time voting analytics")
+
 	fmt.Println("\nUI available at http://localhost:8080")
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
