@@ -639,105 +639,84 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 <!doctype html>
 <html>
 <head>
-<meta charset="utf-8">
-<title>Vote API - POC</title>
-<script src="https://unpkg.com/htmx.org@1.9.12"></script>
-<style>
-  body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
-  fieldset { margin-bottom: 20px; }
-  label { display: block; margin-top: 8px; }
-  input { display: block; margin-top: 4px; width: 100%; box-sizing: border-box; }
-  button { margin-top: 12px; cursor: pointer; }
-  .error { color: #c0392b; }
-  .ok { color: #27ae60; }
-  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-  td, th { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
-  a { cursor: pointer; }
-</style>
+  <meta charset="utf-8">
+  <title>Vote API - PoC</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
-<body>
-<h1>Vote API - POC</h1>
-<div id="app">{{template "auth" .}}</div>
+<body class="bg-base-200 min-h-screen p-4 md:p-8">
+  <div class="max-w-2xl mx-auto bg-base-100 p-8 rounded-2xl shadow-xl">
+    <h1 class="text-3xl font-extrabold mb-8 text-center text-primary">Vote API</h1>
+    <div id="app">{{template "auth" .}}</div>
+  </div>
 </body>
 </html>
 {{end}}
 
 {{define "auth"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-<fieldset>
-  <legend>1. Request passcode</legend>
-  <form hx-post="/ui/request-passcode" hx-target="#app" hx-swap="innerHTML">
-    <label>CPF <input name="cpf" required></label>
-    <label>Name <input name="name" required></label>
-    <label>Phone <input name="phone" required></label>
-    <button type="submit">Request passcode</button>
+{{if .Error}}<div class="alert alert-error mb-6 shadow-sm">{{.Error}}</div>{{end}}
+<div class="grid gap-8">
+  <form hx-post="/ui/request-passcode" hx-target="#app" hx-swap="innerHTML" class="card bg-base-200 p-6 space-y-4">
+    <h2 class="text-xl font-bold">1. Solicitar Acesso</h2>
+    <input name="cpf" placeholder="CPF" class="input input-bordered w-full" required>
+    <input name="name" placeholder="Nome" class="input input-bordered w-full" required>
+    <input name="phone" placeholder="WhatsApp (55...)" class="input input-bordered w-full" required>
+    <button class="btn btn-primary w-full">Gerar Código de Acesso</button>
   </form>
-</fieldset>
-<fieldset>
-  <legend>2. Verify passcode</legend>
-  <form hx-post="/ui/verify" hx-target="#app" hx-swap="innerHTML">
-    <label>CPF <input name="cpf" required></label>
-    <label>Passcode <input name="passcode" required></label>
-    <button type="submit">Verify</button>
+  
+  <form hx-post="/ui/verify" hx-target="#app" hx-swap="innerHTML" class="card bg-base-200 p-6 space-y-4">
+    <h2 class="text-xl font-bold">2. Verificar</h2>
+    <input name="cpf" placeholder="CPF" class="input input-bordered w-full" required>
+    <input name="passcode" placeholder="Passcode" class="input input-bordered w-full" required>
+    <button class="btn btn-secondary w-full">Entrar</button>
   </form>
-</fieldset>
-{{end}}
-
-{{define "passcode_sent"}}
-<p class="ok">Passcode sent (check the server console - this is a PoC stand-in for WhatsApp).</p>
-{{template "auth" .}}
+</div>
 {{end}}
 
 {{define "polls"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-<p>Verified as CPF {{.CPF}}.</p>
-<h2>Active polls</h2>
-{{if not .Polls}}<p>No active polls right now.</p>{{end}}
-<ul>
-{{range .Polls}}
-  <li><a hx-get="/ui/polls/{{.ID}}?cpf={{$.CPF}}" hx-target="#app" hx-swap="innerHTML">{{.Title}}</a></li>
-{{end}}
-</ul>
+<div class="space-y-4">
+  <div class="alert alert-info">Logado como CPF: {{.CPF}}</div>
+  <h2 class="text-2xl font-bold">Enquetes Ativas</h2>
+  {{if not .Polls}}<p class="text-gray-500">Nenhuma enquete disponível.</p>{{end}}
+  <ul class="space-y-2">
+    {{range .Polls}}
+    <li><button hx-get="/ui/polls/{{.ID}}?cpf={{$.CPF}}" hx-target="#app" class="btn btn-outline btn-block justify-start">{{.Title}}</button></li>
+    {{end}}
+  </ul>
+</div>
 {{end}}
 
 {{define "poll_detail"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-<h2>{{.Poll.Title}}</h2>
-<form hx-post="/ui/polls/{{.Poll.ID}}/vote" hx-target="#app" hx-swap="innerHTML">
+<form hx-post="/ui/polls/{{.Poll.ID}}/vote" hx-target="#app" class="space-y-6">
   <input type="hidden" name="cpf" value="{{.CPF}}">
-  {{$type := .Poll.Type}}
-  {{range .Poll.Answers}}
-  <label>
-    <input type="{{if eq $type "radio"}}radio{{else}}checkbox{{end}}" name="answer_ids" value="{{.ID}}" style="display:inline-block;width:auto;">
-    {{.Text}}
-  </label>
-  {{end}}
-  <button type="submit">Vote</button>
+  <h2 class="text-2xl font-bold">{{.Poll.Title}}</h2>
+  <div class="form-control gap-3">
+    {{$type := .Poll.Type}}
+    {{range .Poll.Answers}}
+    <label class="label cursor-pointer justify-start gap-4 border p-4 rounded-lg hover:bg-base-200">
+      <input type="{{if eq $type "radio"}}radio{{else}}checkbox{{end}}" name="answer_ids" value="{{.ID}}" class="{{if eq $type "radio"}}radio{{else}}checkbox{{end}}">
+      <span class="label-text text-lg">{{.Text}}</span>
+    </label>
+    {{end}}
+  </div>
+  <button class="btn btn-success w-full">Confirmar Voto</button>
 </form>
-<p>
-  <a hx-get="/ui/polls/{{.Poll.ID}}/results?cpf={{.CPF}}" hx-target="#app" hx-swap="innerHTML">View results</a>
-  &nbsp;|&nbsp;
-  <a hx-get="/ui/polls?cpf={{.CPF}}" hx-target="#app" hx-swap="innerHTML">Back to polls</a>
-</p>
-{{end}}
-
-{{define "vote_result"}}
-{{if .Error}}
-<p class="error">{{.Error}}</p>
-{{else}}
-<p class="ok">Vote recorded.</p>
-{{end}}
-<p><a hx-get="/ui/polls?cpf={{.CPF}}" hx-target="#app" hx-swap="innerHTML">Back to polls</a></p>
 {{end}}
 
 {{define "results"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-<h2>Results: {{.Poll.Title}}</h2>
-<table>
-<tr><th>Answer</th><th>Votes</th></tr>
-{{range .Results}}<tr><td>{{.Text}}</td><td>{{.Votes}}</td></tr>{{end}}
-</table>
-<p><a hx-get="/ui/polls/{{.Poll.ID}}?cpf={{.CPF}}" hx-target="#app" hx-swap="innerHTML">Back to poll</a></p>
+<div class="space-y-6">
+  <h2 class="text-2xl font-bold">Resultados: {{.Poll.Title}}</h2>
+  <div class="overflow-x-auto">
+    <table class="table table-zebra w-full">
+      <thead><tr><th>Opção</th><th>Votos</th></tr></thead>
+      <tbody>
+        {{range .Results}}<tr><td>{{.Text}}</td><td class="font-bold">{{.Votes}}</td></tr>{{end}}
+      </tbody>
+    </table>
+  </div>
+  <button hx-get="/ui/polls?cpf={{.CPF}}" hx-target="#app" class="btn btn-ghost w-full">Voltar</button>
+</div>
 {{end}}
 `))
 
@@ -1178,7 +1157,7 @@ func main() {
 
 	http.HandleFunc("/", router)
 
-	fmt.Println("Vote API starting on :8080")
+fmt.Println("Vote API starting on :8080")
 	fmt.Println("Endpoints:")
 	fmt.Println("  POST   /auth/request-passcode  - Request voting passcode")
 	fmt.Println("  POST   /auth/verify             - Verify CPF + passcode")
@@ -1187,6 +1166,7 @@ func main() {
 	fmt.Println("  GET    /polls/{id}              - Get poll details")
 	fmt.Println("  POST   /polls/{id}/vote         - Submit vote")
 	fmt.Println("  GET    /polls/{id}/results      - View poll results")
+	fmt.Println("  GET    /admin/stats             - Get real-time voting analytics")
 	fmt.Println("\nUI available at http://localhost:8080")
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
