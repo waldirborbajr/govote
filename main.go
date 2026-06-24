@@ -246,9 +246,8 @@ func handleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[PoC] CPF %s passcode: %s\n", req.CPF, passcode)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"status":       "passcode_generated",
 		"whatsapp_url": whatsappURL,
-		"message":      "Clique no link abaixo para abrir o WhatsApp:",
+		"message":      "Código gerado com sucesso!",
 	})
 }
 
@@ -670,12 +669,111 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
 <body class="bg-base-200 min-h-screen p-4 md:p-8">
-  <div class="max-w-2xl mx-auto bg-base-100 p-8 rounded-2xl shadow-xl">
-    <h1 class="text-3xl font-extrabold mb-8 text-center text-primary">Vote API</h1>
-    <div id="app">{{template "auth" .}}</div>
+  <div class="max-w-3xl mx-auto bg-base-100 p-8 rounded-3xl shadow-2xl">
+    <h1 class="text-4xl font-bold mb-2 text-center text-primary">🗳️ Vote API</h1>
+    <p class="text-center text-base-content/70 mb-10">Sistema de Votação Simples e Seguro</p>
+    
+    <div id="app">{{template "index" .}}</div>
   </div>
 </body>
 </html>
+{{end}}
+
+{{define "index"}}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+  <!-- Card Votar -->
+  <div class="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-all">
+    <div class="text-center mb-6">
+      <div class="text-5xl mb-4">🗳️</div>
+      <h2 class="text-2xl font-bold mb-2">Votar</h2>
+      <p class="text-base-content/70">Participe das enquetes ativas</p>
+    </div>
+    <button hx-get="/ui/voting-flow" hx-target="#app" 
+            class="btn btn-primary btn-lg w-full">
+      Acessar Votação
+    </button>
+  </div>
+
+  <!-- Card Admin -->
+  <div class="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-all">
+    <div class="text-center mb-6">
+      <div class="text-5xl mb-4">⚙️</div>
+      <h2 class="text-2xl font-bold mb-2">Administração</h2>
+      <p class="text-base-content/70">Gerenciar enquetes e resultados</p>
+    </div>
+    <button hx-get="/ui/admin" hx-target="#app" 
+            class="btn btn-secondary btn-lg w-full">
+      Entrar como Administrador
+    </button>
+  </div>
+</div>
+{{end}}
+
+{{define "voting_flow"}}
+<div class="card bg-base-100 shadow-xl p-8">
+  <h2 class="text-2xl font-bold mb-6 text-center">🗳️ Área de Votação</h2>
+  {{if .Error}}<div class="alert alert-error mb-6">{{.Error}}</div>{{end}}
+
+  <div class="grid gap-4">
+    <button hx-get="/ui/request-passcode-form" hx-target="#app" 
+            class="btn btn-primary btn-lg">
+      📱 Gerar Código de Acesso
+    </button>
+    
+    <div class="divider">OU</div>
+    
+    <button hx-get="/ui/verify-form" hx-target="#app" 
+            class="btn btn-outline btn-lg">
+      🔑 Já tenho código (Entrar)
+    </button>
+  </div>
+  
+  <button hx-get="/" hx-target="#app" class="btn btn-ghost mt-8 w-full">
+    ← Voltar
+  </button>
+</div>
+{{end}}
+
+{{define "admin_dashboard"}}
+<div class="space-y-6">
+  <h2 class="text-3xl font-bold text-center">Painel Administrativo</h2>
+  
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <button hx-get="/ui/polls/create" hx-target="#app" 
+            class="btn btn-primary h-24 text-lg">
+      ➕ Criar Nova Enquete
+    </button>
+    
+    <button hx-get="/ui/admin/polls" hx-target="#app" 
+            class="btn btn-secondary h-24 text-lg">
+      📊 Ver Enquetes e Resultados
+    </button>
+    
+    <button hx-get="/admin/stats" hx-target="#app" 
+            class="btn btn-accent h-24 text-lg">
+      📈 Estatísticas de Votos
+    </button>
+  </div>
+
+  <button hx-get="/" hx-target="#app" class="btn btn-ghost w-full">
+    ← Voltar ao Início
+  </button>
+</div>
+{{end}}
+
+{{define "passcode_sent"}}
+<div class="card bg-base-100 shadow-xl p-8 text-center space-y-6">
+  <h2 class="text-3xl font-bold text-success">✅ Código Gerado!</h2>
+  <p class="text-lg">Envie o código pelo WhatsApp para continuar.</p>
+  {{if .WhatsAppURL}}
+  <a href="{{.WhatsAppURL}}" target="_blank" class="btn btn-primary btn-lg w-full">
+    📱 Abrir WhatsApp
+  </a>
+  {{end}}
+  <button hx-get="/ui/voting-flow" hx-target="#app" class="btn btn-outline w-full">
+    Voltar
+  </button>
+</div>
 {{end}}
 
 {{define "auth"}}
@@ -776,12 +874,6 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 {{define "polls"}}
 <div class="space-y-4">
   <h2 class="text-2xl font-bold">Enquetes Ativas</h2>
-  
-  {{/* Mostra o botão apenas se o usuário for admin */}}
-  {{if .IsAdmin}}
-    <a href="/ui/polls/create" class="btn btn-primary mb-4">Nova Enquete</a>
-  {{end}}
-
   <ul class="space-y-2">
     {{range .Polls}}
     <li><button hx-get="/ui/polls/{{.ID}}?cpf={{$.CPF}}" class="btn btn-outline btn-block">{{.Title}}</button></li>
@@ -790,26 +882,28 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 </div>
 {{end}}
 
-{{define "passcode_sent"}}
-<div class="card bg-base-100 shadow-xl p-8 text-center space-y-4">
-  <h2 class="text-2xl font-bold text-success">Código Gerado!</h2>
-  <p>Para concluir, clique no botão abaixo e envie o código pelo WhatsApp.</p>
-  <a href="{{.WhatsAppURL}}" target="_blank" class="btn btn-primary btn-lg w-full">
-    Abrir WhatsApp
-  </a>
+{{define "verify_form"}}
+<div class="card bg-base-100 shadow-xl p-8">
+  <h2 class="text-2xl font-bold mb-6">🔑 Verificar Acesso</h2>
+  <form hx-post="/ui/verify" hx-target="#app" hx-swap="innerHTML" class="space-y-4">
+    <input name="cpf" placeholder="CPF" class="input input-bordered w-full" required>
+    <input name="passcode" placeholder="Código de 4 dígitos" class="input input-bordered w-full" required>
+    <button class="btn btn-secondary w-full">Entrar</button>
+  </form>
+  <button hx-get="/ui/voting-flow" hx-target="#app" class="btn btn-ghost w-full mt-4">← Voltar</button>
 </div>
 {{end}}
-
 `))
 
 
 
 type uiPageData struct {
-	Error   string
-	CPF     string
-	Polls   []Poll
-	Poll    Poll
-	Results []ResultAnswer
+	Error       string
+	CPF         string
+	Polls       []Poll
+	Poll        Poll
+	Results     []ResultAnswer
+	WhatsAppURL string  // ← adicionar
 }
 
 // UI Handlers
@@ -818,9 +912,35 @@ func handleUIIndex(w http.ResponseWriter, r *http.Request) {
 	uiTemplates.ExecuteTemplate(w, "page", uiPageData{})
 }
 
+func handleUIVerifyForm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.ExecuteTemplate(w, "verify_form", uiPageData{})
+}
+
+func handleUIVotingFlow(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.ExecuteTemplate(w, "voting_flow", uiPageData{})
+}
+
+func handleUIRequestPasscodeForm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.ExecuteTemplate(w, "auth", uiPageData{})
+}
+
+func handleUIAdmin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.ExecuteTemplate(w, "admin_dashboard", uiPageData{})
+}
+
+func handleUIAdminPolls(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	renderUIPolls(w, "", "") // Reusa a função existente
+}
+
 func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
+
 	cpf := strings.TrimSpace(r.FormValue("cpf"))
 	name := strings.TrimSpace(r.FormValue("name"))
 	phone := strings.TrimSpace(r.FormValue("phone"))
@@ -831,8 +951,10 @@ func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	passcode := generatePasscode()
+
 	db.MustExecParams(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) VALUES (?, ?, ?, ?, NULL)
+		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) 
+		 VALUES (?, ?, ?, ?, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
 		1, 4,
 		[]sqinn.Value{
@@ -843,8 +965,15 @@ func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
+	// === CORREÇÃO AQUI ===
+	whatsappURL := buildWhatsAppURL(phone, passcode)
+
 	fmt.Printf("[PoC] CPF %s passcode: %s (for phone %s)\n", cpf, passcode, phone)
-	uiTemplates.ExecuteTemplate(w, "passcode_sent", uiPageData{})
+
+	// Passa os dados necessários para o template
+	uiTemplates.ExecuteTemplate(w, "passcode_sent", uiPageData{
+		WhatsAppURL: whatsappURL,
+	})
 }
 
 func handleUIVerify(w http.ResponseWriter, r *http.Request) {
@@ -1267,13 +1396,23 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleResults(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/admin/stats":
     	handleAdminStats(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/verify-form":
+		handleUIVerifyForm(w, r)		
 	// UI Routes
 	case r.Method == http.MethodGet && r.URL.Path == "/":
 		handleUIIndex(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/voting-flow":
+		handleUIVotingFlow(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/request-passcode-form":
+		handleUIRequestPasscodeForm(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/request-passcode":
 		handleUIRequestPasscode(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/verify":
 		handleUIVerify(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin":
+		handleUIAdmin(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin/polls":
+		handleUIAdminPolls(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/polls":
 		handleUIPolls(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/ui/polls/") && !strings.Contains(r.URL.Path, "/vote") && !strings.Contains(r.URL.Path, "/results"):
