@@ -1,7 +1,8 @@
 package main
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -42,7 +43,6 @@ type ResultAnswer struct {
 	Votes int    `json:"votes"`
 }
 
-// Request/Response types
 type RequestPasscodeReq struct {
 	CPF   string `json:"cpf"`
 	Name  string `json:"name"`
@@ -70,10 +70,38 @@ type VoteReq struct {
 }
 
 // ============================================================================
-// GLOBAL DB
+// GLOBAL DB & CONFIG
 // ============================================================================
 
 var db *sqinn.Sqinn
+
+// Salt for hash anonymization (In production, use environment variables)
+const hashSalt = "super-secret-salt-value"
+
+// ============================================================================
+// SECURITY & HELPERS
+// ============================================================================
+
+// hashCPF generates a SHA-256 hash of the CPF for voter anonymization.
+func hashCPF(cpf string) string {
+	h := sha256.New()
+	h.Write([]byte(cpf + hashSalt))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// logAction inserts an audit trail record into the database.
+func logAction(action, details string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	db.MustExecParams(
+		`INSERT INTO audit_logs (action, details, created_at) VALUES (?, ?, ?)`,
+		1, 3,
+		[]sqinn.Value{
+			sqinn.StringValue(action),
+			sqinn.StringValue(details),
+			sqinn.StringValue(now),
+		},
+	)
+}
 
 // ============================================================================
 // SCHEMA
@@ -106,12 +134,17 @@ func initDB() error {
 		`CREATE TABLE IF NOT EXISTS votes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			poll_id INTEGER NOT NULL,
-			cpf TEXT NOT NULL,
+			voter_hash TEXT NOT NULL, 
 			answer_ids TEXT NOT NULL,
 			voted_at TEXT NOT NULL,
-			UNIQUE(poll_id, cpf),
-			FOREIGN KEY (poll_id) REFERENCES polls(id),
-			FOREIGN KEY (cpf) REFERENCES voters(cpf)
+			UNIQUE(poll_id, voter_hash),
+			FOREIGN KEY (poll_id) REFERENCES polls(id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			action TEXT NOT NULL,
+			details TEXT,
+			created_at TEXT NOT NULL
 		)`,
 	}
 
@@ -424,6 +457,9 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hash the CPF before storage
+    voterHash := hashCPF(req.CPF)
+
 	row := prows[0]
 	pollType := row[0].String
 	startDate := row[1].String
@@ -451,9 +487,10 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+// Check for existing vote using the hash
 	vrows, err := db.QueryRows(
-		`SELECT id FROM votes WHERE poll_id = ? AND cpf = ?`,
-		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(req.CPF)},
+		`SELECT id FROM votes WHERE poll_id = ? AND voter_hash = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(voterHash)},
 		[]byte{sqinn.ValInt64},
 	)
 	if err != nil {
@@ -468,16 +505,19 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 	answerIDsJSON, _ := json.Marshal(req.AnswerIDs)
 	now := time.Now().UTC().Format(time.RFC3339)
 
+// Store the anonymized hash
 	db.MustExecParams(
-		`INSERT INTO votes (poll_id, cpf, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO votes (poll_id, voter_hash, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
 		1, 4,
 		[]sqinn.Value{
 			sqinn.Int64Value(pollID),
-			sqinn.StringValue(req.CPF),
+			sqinn.StringValue(voterHash),
 			sqinn.StringValue(string(answerIDsJSON)),
 			sqinn.StringValue(now),
 		},
 	)
+    
+    logAction("VOTE_SUBMITTED", fmt.Sprintf("PollID: %d", pollID))
 
 	respondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
 }
