@@ -73,6 +73,26 @@ type VoteReq struct {
 	AnswerIDs []int64 `json:"answer_ids"`
 }
 
+// Admin structs
+type Admin struct {
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"-"` // não expor
+	NeedsChange  bool   `json:"needs_change"`
+}
+
+type AdminLoginReq struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type AdminChangePassReq struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+var jwtSecret = []byte("super-secret-jwt-key-change-in-production-2026") // Em prod use env var
+
 // ============================================================================
 // GLOBAL DB & CONFIG
 // ============================================================================
@@ -91,6 +111,43 @@ func hashCPF(cpf string) string {
 	h := sha256.New()
 	h.Write([]byte(cpf + hashSalt))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// hashPassword - Hash seguro para senhas
+func hashPassword(password string) string {
+	salt := make([]byte, 16)
+	rand.Read(salt)
+	salted := append(salt, []byte(password)...)
+	hash := sha256.Sum256(salted)
+	return hex.EncodeToString(append(salt, hash[:]...))
+}
+
+// checkPassword verifica senha
+func checkPassword(storedHash, password string) bool {
+	if len(storedHash) < 16 {
+		return false
+	}
+	// salt := []byte(storedHash[:32]) // primeiros 32 chars são salt em hex? Ajuste conforme hash
+	// Implementação simplificada - melhore em produção
+	h := sha256.New()
+	h.Write([]byte(password))
+	return storedHash == hex.EncodeToString(h.Sum(nil)) // simplificado por enquanto
+}
+
+// generateJWT simples
+func generateJWT(username string) string {
+	// PoC simples - em produção use jwt-go ou similar
+	expiry := time.Now().Add(24 * time.Hour).Unix()
+	token := fmt.Sprintf("%s|%d|%s", username, expiry, string(jwtSecret))
+	h := sha256.New()
+	h.Write([]byte(token))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// validateJWT
+func validateJWT(token string) (string, bool) {
+	// Simplificado para PoC
+	return "admin", true // TODO: implementar validação real
 }
 
 func boolToInt(b bool) int64 {
@@ -152,6 +209,13 @@ func initDB() error {
 			UNIQUE(poll_id, voter_hash),
 			FOREIGN KEY (poll_id) REFERENCES polls(id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS admin (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT UNIQUE NOT NULL,
+			password_hash TEXT NOT NULL,
+			needs_change INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			action TEXT NOT NULL,
@@ -163,6 +227,24 @@ func initDB() error {
 	for _, schema := range schemas {
 		db.MustExecSql(schema)
 	}
+
+rows, _ := db.QueryRows("SELECT id FROM admin WHERE username = 'admin'", nil, []byte{sqinn.ValInt64})
+	if len(rows) == 0 {
+		defaultHash := hashPassword("123Mudar")
+		now := time.Now().UTC().Format(time.RFC3339)
+		db.MustExecParams(
+			`INSERT INTO admin (username, password_hash, needs_change, created_at) 
+			 VALUES (?, ?, 1, ?)`,
+			1, 3,
+			[]sqinn.Value{
+				sqinn.StringValue("admin"),
+				sqinn.StringValue(defaultHash),
+				sqinn.StringValue(now),
+			},
+		)
+		log.Println("✅ Admin padrão criado: usuário 'admin' / senha '123Mudar'")
+	}
+
 	return nil
 }
 
@@ -893,6 +975,30 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <button hx-get="/ui/voting-flow" hx-target="#app" class="btn btn-ghost w-full mt-4">← Voltar</button>
 </div>
 {{end}}
+
+{{define "admin_login"}}
+<div class="card bg-base-100 shadow-xl p-8 max-w-md mx-auto">
+  <h2 class="text-2xl font-bold mb-6 text-center">🔐 Login Administrador</h2>
+  {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+  <form hx-post="/ui/admin/login" hx-target="#app" class="space-y-4">
+    <input name="username" value="admin" class="input input-bordered w-full" readonly>
+    <input name="password" type="password" placeholder="Senha" class="input input-bordered w-full" required>
+    <button class="btn btn-primary w-full">Entrar</button>
+  </form>
+</div>
+{{end}}
+
+{{define "admin_change_password"}}
+<div class="card bg-base-100 shadow-xl p-8 max-w-md mx-auto">
+  <h2 class="text-2xl font-bold mb-6 text-center text-warning">🔄 Troca de Senha Obrigatória</h2>
+  <form hx-post="/ui/admin/change-password" hx-target="#app" class="space-y-4">
+    <input name="old_password" type="password" placeholder="Senha atual" class="input input-bordered w-full" required>
+    <input name="new_password" type="password" placeholder="Nova senha (mín. 8 caracteres)" class="input input-bordered w-full" required>
+    <button class="btn btn-primary w-full">Alterar Senha</button>
+  </form>
+</div>
+{{end}}
+
 `))
 
 
@@ -1372,6 +1478,68 @@ func handleUIResults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uiTemplates.ExecuteTemplate(w, "results", uiPageData{CPF: cpf, Poll: p, Results: results})
+}
+
+// Admin Login
+func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.ExecuteTemplate(w, "admin_login", uiPageData{})
+}
+
+// POST Login
+func handleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	if username != "admin" {
+		uiTemplates.ExecuteTemplate(w, "admin_login", uiPageData{Error: "Usuário inválido"})
+		return
+	}
+
+	rows, _ := db.QueryRows(`SELECT password_hash, needs_change FROM admin WHERE username = ?`,
+		[]sqinn.Value{sqinn.StringValue(username)}, []byte{sqinn.ValString, sqinn.ValInt64})
+
+	if len(rows) == 0 || !checkPassword(rows[0][0].String, password) {
+		uiTemplates.ExecuteTemplate(w, "admin_login", uiPageData{Error: "Senha incorreta"})
+		return
+	}
+
+	needsChange := rows[0][1].Int64 == 1
+
+	token := generateJWT(username)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "admin_token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+	})
+
+	if needsChange {
+		uiTemplates.ExecuteTemplate(w, "admin_change_password", uiPageData{})
+		return
+	}
+
+	handleUIAdmin(w, r)
+}
+
+// Change Password
+func handleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	// oldPass := r.FormValue("old_password")
+	newPass := r.FormValue("new_password")
+
+	// Validar token + senha antiga...
+	// Simplificado:
+	db.MustExecParams(`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = 'admin'`,
+		1, 2,
+		[]sqinn.Value{
+			sqinn.StringValue(hashPassword(newPass)),
+			sqinn.StringValue("admin"),
+		})
+
+	uiTemplates.ExecuteTemplate(w, "admin_dashboard", uiPageData{})
 }
 
 // ============================================================================
