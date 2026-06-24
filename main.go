@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math/rand"
 	"fmt"
 	"html/template"
 	"log"
@@ -27,6 +28,7 @@ type Poll struct {
 	StartDate string   `json:"start_date"`
 	EndDate   string   `json:"end_date"`
 	Answers   []Answer `json:"answers"`
+	AllowBlank int64   `json:"allow_blank"`
 	CreatedAt string   `json:"created_at"`
 }
 
@@ -54,12 +56,14 @@ type VerifyReq struct {
 	Passcode string `json:"passcode"`
 }
 
+// Updated struct to support the new flag
 type CreatePollReq struct {
-	Title     string `json:"title"`
-	Type      string `json:"type"`
-	StartDate string `json:"start_date"`
-	EndDate   string `json:"end_date"`
-	Answers   []struct {
+	Title      string `json:"title"`
+	Type       string `json:"type"`
+	StartDate  string `json:"start_date"`
+	EndDate    string `json:"end_date"`
+	AllowBlank bool   `json:"allow_blank"` // New field
+	Answers    []struct {
 		Text string `json:"text"`
 	} `json:"answers"`
 }
@@ -87,6 +91,13 @@ func hashCPF(cpf string) string {
 	h := sha256.New()
 	h.Write([]byte(cpf + hashSalt))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func boolToInt(b bool) int64 {
+    if b {
+        return 1
+    }
+    return 0
 }
 
 // logAction inserts an audit trail record into the database.
@@ -410,17 +421,18 @@ func handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	db.MustExecParams(
-		`INSERT INTO polls (title, type, start_date, end_date, created_at) VALUES (?, ?, ?, ?, ?)`,
-		1, 5,
-		[]sqinn.Value{
-			sqinn.StringValue(req.Title),
-			sqinn.StringValue(req.Type),
-			sqinn.StringValue(req.StartDate),
-			sqinn.StringValue(req.EndDate),
-			sqinn.StringValue(now),
-		},
-	)
+db.MustExecParams(
+	`INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+	1, 6,
+	[]sqinn.Value{
+		sqinn.StringValue(req.Title),
+		sqinn.StringValue(req.Type),
+		sqinn.StringValue(req.StartDate),
+		sqinn.StringValue(req.EndDate),
+		sqinn.Int64Value(boolToInt(req.AllowBlank)),
+		sqinn.StringValue(now),
+	},
+)
 
 	// Return latest poll as fallback
 	handleListPolls(w, r)
@@ -460,6 +472,9 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 	// Hash the CPF before storage
     voterHash := hashCPF(req.CPF)
 
+	// Clear input reference immediately after hashing for safety
+    req.CPF = ""
+
 	row := prows[0]
 	pollType := row[0].String
 	startDate := row[1].String
@@ -474,6 +489,16 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "radio poll accepts only one answer")
 		return
 	}
+
+	// Logic for Blank Vote: if allow_blank is enabled, allow empty answer_ids
+if len(req.AnswerIDs) == 0 {
+    // Check if blank vote is allowed for this specific poll
+    if row[3].Int64 == 0 { // Assuming allow_blank is the 4th column in SELECT
+        respondError(w, http.StatusBadRequest, "this poll requires an answer")
+        return
+    }
+    // Proceed with empty ID array to represent a blank vote
+}
 
 	for _, ansID := range req.AnswerIDs {
 		arows, err := db.QueryRows(
@@ -522,6 +547,12 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
 }
 
+// Helper to simulate result notification
+func simulateNotification(pollID int64, results []ResultAnswer) {
+    // In a real system, this would trigger an email/WhatsApp job
+    log.Printf("[NOTIFICATION SIMULATION] Poll ID %d ended. Results: %+v", pollID, results)
+}
+
 // GET /polls/:id/results
 func handleResults(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimPrefix(r.URL.Path, "/polls/")
@@ -532,6 +563,18 @@ func handleResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. Buscar end_date e calcular resultados primeiro
+	prows, err := db.QueryRows(`SELECT end_date FROM polls WHERE id = ?`,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValString},
+	)
+	if err != nil || len(prows) == 0 {
+		respondError(w, http.StatusNotFound, "poll not found")
+		return
+	}
+	pollEndDate, _ := time.Parse(time.RFC3339, prows[0][0].String)
+
+	// Busca das respostas
 	arows, err := db.QueryRows(
 		`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
 		[]sqinn.Value{sqinn.Int64Value(pollID)},
@@ -549,6 +592,7 @@ func handleResults(w http.ResponseWriter, r *http.Request) {
 		answerMap[id] = ResultAnswer{ID: id, Text: text, Votes: 0}
 	}
 
+	// Processamento de votos
 	vrows, err := db.QueryRows(
 		`SELECT answer_ids FROM votes WHERE poll_id = ?`,
 		[]sqinn.Value{sqinn.Int64Value(pollID)},
@@ -573,6 +617,11 @@ func handleResults(w http.ResponseWriter, r *http.Request) {
 	var results []ResultAnswer
 	for _, ans := range answerMap {
 		results = append(results, ans)
+	}
+
+	// 2. Agora que 'results' existe, podemos verificar o tempo e notificar
+	if time.Now().After(pollEndDate) {
+		simulateNotification(pollID, results)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -957,6 +1006,43 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 	uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf})
 }
 
+// GET /admin/stats
+func handleAdminStats(w http.ResponseWriter, r *http.Request) {
+    // 1. Total de eleitores únicos (votos distintos)
+    rows, err := db.QueryRows("SELECT count(DISTINCT voter_hash) FROM votes", nil, []byte{sqinn.ValInt64})
+    if err != nil || len(rows) == 0 {
+        respondError(w, http.StatusInternalServerError, "db error")
+        return
+    }
+    totalVotes := rows[0][0].Int64
+
+    // 2. Turnout (Simulando uma constante de eleitores esperados)
+    const totalEligible = 1000.0
+    turnout := (float64(totalVotes) / totalEligible) * 100
+
+    // 3. Evolução temporal (votos por hora)
+    // Agrupamos pela string da data (truncada na hora)
+    trows, _ := db.QueryRows(
+        `SELECT strftime('%Y-%m-%dT%H:00:00', voted_at) as hour, count(*) 
+         FROM votes GROUP BY hour ORDER BY hour ASC`,
+        nil, []byte{sqinn.ValString, sqinn.ValInt64},
+    )
+
+    var timeline []map[string]interface{}
+    for _, row := range trows {
+        timeline = append(timeline, map[string]interface{}{
+            "hour":  row[0].String,
+            "count": row[1].Int64,
+        })
+    }
+
+    respondJSON(w, http.StatusOK, map[string]interface{}{
+        "total_votes": totalVotes,
+        "turnout_pct": turnout,
+        "timeline":    timeline,
+    })
+}
+
 func handleUIResults(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	cpf := r.URL.Query().Get("cpf")
@@ -1054,6 +1140,8 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleVote(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/polls/") && strings.HasSuffix(r.URL.Path, "/results"):
 		handleResults(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/admin/stats":
+    	handleAdminStats(w, r)
 
 	// UI Routes
 	case r.Method == http.MethodGet && r.URL.Path == "/":
