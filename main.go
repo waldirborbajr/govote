@@ -141,14 +141,17 @@ func hashPassword(password string) string {
 
 // checkPassword verifica senha
 func checkPassword(storedHash, password string) bool {
-	if len(storedHash) < 16 {
+	raw, err := hex.DecodeString(storedHash)
+	if err != nil || len(raw) < 16+sha256.Size {
 		return false
 	}
-	// salt := []byte(storedHash[:32]) // primeiros 32 chars são salt em hex? Ajuste conforme hash
-	// Implementação simplificada - melhore em produção
+	salt := raw[:16]
+	expectedHash := raw[16:]
+
 	h := sha256.New()
+	h.Write(salt)
 	h.Write([]byte(password))
-	return storedHash == hex.EncodeToString(h.Sum(nil)) // simplificado por enquanto
+	return hex.EncodeToString(h.Sum(nil)) == hex.EncodeToString(expectedHash)
 }
 
 // generateJWT simples
@@ -1661,7 +1664,7 @@ func handleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handleUIAdmin(w, r) // Redireciona para dashboard
+	uiTemplates.ExecuteTemplate(w, "admin_dashboard", uiPageData{})
 }
 
 // Change Password
@@ -1672,7 +1675,7 @@ func handleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	// Validar token + senha antiga...
 	// Simplificado:
-	db.MustExecParams(`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = 'admin'`,
+	db.MustExecParams(`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = ?`,
 		1, 2,
 		[]sqinn.Value{
 			sqinn.StringValue(hashPassword(newPass)),
@@ -1719,6 +1722,8 @@ func router(w http.ResponseWriter, r *http.Request) {
 		rateLimitMiddleware(handleUIVerify)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/login":
 		rateLimitMiddleware(handleAdminLoginPost)(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/change-password":
+		handleAdminChangePassword(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin":
 		handleUIAdmin(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin/polls":
