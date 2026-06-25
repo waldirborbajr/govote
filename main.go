@@ -280,24 +280,61 @@ func initDB() error {
 		db.MustExecSql(schema)
 	}
 
-	rows, _ := db.QueryRows("SELECT id FROM admin WHERE username = 'admin'", nil, []byte{sqinn.ValInt64})
-	if len(rows) == 0 {
-		defaultHash := hashPassword("123Mudar")
-		now := time.Now().UTC().Format(time.RFC3339)
-		db.MustExecParams(
-			`INSERT INTO admin (username, password_hash, is_super, enabled, needs_change, created_at) 
-			 VALUES (?, ?, 1, 1, 1, ?)`,
-			1, 3,
-			[]sqinn.Value{
-				sqinn.StringValue("admin"),
-				sqinn.StringValue(defaultHash),
-				sqinn.StringValue(now),
-			},
-		)
-		log.Println("✅ Admin padrão criado: usuário 'admin' / senha '123Mudar'")
-	}
+// Criar Admin
+    rows, _ := db.QueryRows("SELECT id FROM admin WHERE username = 'admin'", []sqinn.Value{}, []byte{sqinn.ValInt64})
+    if len(rows) == 0 {
+        defaultHash := hashPassword("123Mudar")
+        now := time.Now().UTC().Format(time.RFC3339)
+        db.MustExecParams(
+            `INSERT INTO admin (username, password_hash, created_at) VALUES (?, ?, ?)`,
+            1, 3,
+            []sqinn.Value{
+                sqinn.StringValue("admin"),
+                sqinn.StringValue(defaultHash),
+                sqinn.StringValue(now),
+            },
+        )
+        log.Println("✅ Admin padrão criado.")
+    }
 
-	return nil
+    // Inserir Enquete de Teste
+    rows, _ = db.QueryRows("SELECT count(*) FROM polls WHERE title = ?", []sqinn.Value{sqinn.StringValue("Qual cor prefere?")}, []byte{sqinn.ValInt64})
+    if rows[0][0].Int64 == 0 {
+        // Insere a enquete
+        db.MustExecParams(
+            `INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+            1, 6,
+            []sqinn.Value{
+                sqinn.StringValue("Qual cor prefere?"),
+                sqinn.StringValue("radio"),
+                sqinn.StringValue("2025-01-01T00:00:00Z"),
+                sqinn.StringValue("2026-12-31T23:59:59Z"),
+                sqinn.Int64Value(0),
+                sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
+            },
+        )
+        
+        // Recupera o ID da última enquete (usando a variável rows existente)
+        rows, _ = db.QueryRows("SELECT id FROM polls ORDER BY id DESC LIMIT 1", []sqinn.Value{}, []byte{sqinn.ValInt64})
+        pollID := rows[0][0].Int64
+        
+        // Insere as opções
+        cores := []string{"Azul", "Branco", "Vermelho", "Verde", "Preto"}
+        for i, cor := range cores {
+            db.MustExecParams(
+                `INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
+                1, 3,
+                []sqinn.Value{
+                    sqinn.Int64Value(pollID),
+                    sqinn.StringValue(cor),
+                    sqinn.Int64Value(int64(i)),
+                },
+            )
+        }
+        log.Println("✅ Enquete de teste inserida.")
+    }
+
+    return nil
 }
 
 // ============================================================================
