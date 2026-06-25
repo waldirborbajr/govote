@@ -198,8 +198,9 @@ func initDB() error {
 			cpf TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			phone TEXT NOT NULL,
-			passcode TEXT NOT NULL,
-			verified_at TEXT
+			passcode TEXT,
+			verified_at TEXT,
+			used_at TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS polls (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -408,6 +409,7 @@ func handleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /auth/verify
+// POST /auth/verify (API)
 func handleVerify(w http.ResponseWriter, r *http.Request) {
 	var req VerifyReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -421,30 +423,35 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := db.QueryRows(
-		`SELECT passcode FROM voters WHERE cpf = ?`,
+		`SELECT passcode, used_at FROM voters WHERE cpf = ?`,
 		[]sqinn.Value{sqinn.StringValue(req.CPF)},
-		[]byte{sqinn.ValString},
+		[]byte{sqinn.ValString, sqinn.ValString},
 	)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	if len(rows) == 0 {
+	if err != nil || len(rows) == 0 {
 		respondError(w, http.StatusUnauthorized, "cpf not found")
 		return
 	}
 
 	storedPasscode := rows[0][0].String
+	usedAt := rows[0][1].String
+
 	if storedPasscode != req.Passcode {
 		respondError(w, http.StatusUnauthorized, "wrong passcode")
 		return
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	if usedAt != "" {
+		respondError(w, http.StatusUnauthorized, "este código já foi utilizado. Solicite um novo.")
+		return
+	}
+
 	db.MustExecParams(
-		`UPDATE voters SET verified_at = ? WHERE cpf = ?`,
+		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
 		1, 2,
-		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(req.CPF)},
+		[]sqinn.Value{
+			sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
+			sqinn.StringValue(req.CPF),
+		},
 	)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"verified": true, "cpf": req.CPF})
@@ -649,10 +656,8 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hash the CPF before storage
-    voterHash := hashCPF(req.CPF)
-
-	// Clear input reference immediately after hashing for safety
-    req.CPF = ""
+	voterHash := hashCPF(req.CPF)
+	cpfOriginal := req.CPF // Guardamos para invalidar passcode
 
 	row := prows[0]
 	pollType := row[0].String
@@ -669,15 +674,13 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Logic for Blank Vote: if allow_blank is enabled, allow empty answer_ids
-if len(req.AnswerIDs) == 0 {
-    // Check if blank vote is allowed for this specific poll
-    if row[3].Int64 == 0 { // Assuming allow_blank is the 4th column in SELECT
-        respondError(w, http.StatusBadRequest, "this poll requires an answer")
-        return
-    }
-    // Proceed with empty ID array to represent a blank vote
-}
+	// Blank vote logic
+	if len(req.AnswerIDs) == 0 {
+		if row[3].Int64 == 0 {
+			respondError(w, http.StatusBadRequest, "this poll requires an answer")
+			return
+		}
+	}
 
 	for _, ansID := range req.AnswerIDs {
 		arows, err := db.QueryRows(
@@ -691,7 +694,7 @@ if len(req.AnswerIDs) == 0 {
 		}
 	}
 
-// Check for existing vote using the hash
+	// Check existing vote
 	vrows, err := db.QueryRows(
 		`SELECT id FROM votes WHERE poll_id = ? AND voter_hash = ?`,
 		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(voterHash)},
@@ -709,7 +712,7 @@ if len(req.AnswerIDs) == 0 {
 	answerIDsJSON, _ := json.Marshal(req.AnswerIDs)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-// Store the anonymized hash
+	// Insert vote
 	db.MustExecParams(
 		`INSERT INTO votes (poll_id, voter_hash, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
 		1, 4,
@@ -720,8 +723,18 @@ if len(req.AnswerIDs) == 0 {
 			sqinn.StringValue(now),
 		},
 	)
-    
-    logAction("VOTE_SUBMITTED", fmt.Sprintf("PollID: %d", pollID))
+
+	// Invalidate passcode after successful vote
+	db.MustExecParams(
+		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
+		1, 2,
+		[]sqinn.Value{
+			sqinn.StringValue(now),
+			sqinn.StringValue(cpfOriginal),
+		},
+	)
+
+	logAction("VOTE_SUBMITTED", fmt.Sprintf("PollID: %d", pollID))
 
 	respondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
 }
@@ -1247,9 +1260,9 @@ func handleUIVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.QueryRows(`SELECT passcode FROM voters WHERE cpf = ?`,
+	rows, err := db.QueryRows(`SELECT passcode, used_at FROM voters WHERE cpf = ?`,
 		[]sqinn.Value{sqinn.StringValue(cpf)},
-		[]byte{sqinn.ValString},
+		[]byte{sqinn.ValString, sqinn.ValString},
 	)
 	if err != nil {
 		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "db error"})
@@ -1265,10 +1278,23 @@ func handleUIVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	db.MustExecParams(`UPDATE voters SET verified_at = ? WHERE cpf = ?`,
+	if rows[0][0].String != passcode {
+		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "wrong passcode"})
+		return
+	}
+
+	if rows[0][1].String != "" { // used_at
+		uiTemplates.ExecuteTemplate(w, "auth", uiPageData{Error: "Este código já foi utilizado. Solicite um novo."})
+		return
+	}
+
+	db.MustExecParams(
+		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
 		1, 2,
-		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(cpf)},
+		[]sqinn.Value{
+			sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
+			sqinn.StringValue(cpf),
+		},
 	)
 
 	renderUIPolls(w, cpf, "")
@@ -1444,6 +1470,7 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 
 	answerIDsJSON, _ := json.Marshal(answerIDs)
 	now := time.Now().UTC().Format(time.RFC3339)
+
 	db.MustExecParams(
 		`INSERT INTO votes (poll_id, cpf, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
 		1, 4,
@@ -1452,6 +1479,16 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 			sqinn.StringValue(cpf),
 			sqinn.StringValue(string(answerIDsJSON)),
 			sqinn.StringValue(now),
+		},
+	)
+
+	// Invalidate passcode after vote
+	db.MustExecParams(
+		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
+		1, 2,
+		[]sqinn.Value{
+			sqinn.StringValue(now),
+			sqinn.StringValue(cpf),
 		},
 	)
 
@@ -1817,4 +1854,3 @@ func main() {
 	// Fechar banco de dados
 	fmt.Println("💾 Banco de dados fechado.")
 }
-
