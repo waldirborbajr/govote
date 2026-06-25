@@ -640,9 +640,31 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.CPF) == "" || len(req.AnswerIDs) == 0 {
-		respondError(w, http.StatusBadRequest, "cpf and answer_ids required")
+	if voteErr := castVote(pollID, req.CPF, req.AnswerIDs); voteErr != nil {
+		respondError(w, voteErr.status, voteErr.message)
 		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
+}
+
+// voteError represents a failure from castVote, carrying the HTTP status
+// that the caller (API or UI handler) should map to its own response format.
+type voteError struct {
+	status  int
+	message string
+}
+
+func (e *voteError) Error() string { return e.message }
+
+// castVote validates and records a vote for the given poll, applying the
+// same checks and anonymization (CPF is hashed, never stored) regardless of
+// whether the caller is the JSON API or the HTMX UI. This is the single
+// path that may INSERT into votes, so the two callers cannot drift apart
+// on how CPF is handled.
+func castVote(pollID int64, cpf string, answerIDs []int64) *voteError {
+	if strings.TrimSpace(cpf) == "" || len(answerIDs) == 0 {
+		return &voteError{http.StatusBadRequest, "cpf and answer_ids required"}
 	}
 
 	prows, err := db.QueryRows(
@@ -651,13 +673,10 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		[]byte{sqinn.ValString, sqinn.ValString, sqinn.ValString},
 	)
 	if err != nil || len(prows) == 0 {
-		respondError(w, http.StatusNotFound, "poll not found")
-		return
+		return &voteError{http.StatusNotFound, "poll not found"}
 	}
 
-	// Hash the CPF before storage
-	voterHash := hashCPF(req.CPF)
-	cpfOriginal := req.CPF // Guardamos para invalidar passcode
+	voterHash := hashCPF(cpf)
 
 	row := prows[0]
 	pollType := row[0].String
@@ -665,54 +684,39 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 	endDate := row[2].String
 
 	if !isPollActive(startDate, endDate) {
-		respondError(w, http.StatusGone, "poll is no longer active")
-		return
+		return &voteError{http.StatusGone, "poll is no longer active"}
 	}
 
-	if pollType == "radio" && len(req.AnswerIDs) > 1 {
-		respondError(w, http.StatusBadRequest, "radio poll accepts only one answer")
-		return
+	if pollType == "radio" && len(answerIDs) > 1 {
+		return &voteError{http.StatusBadRequest, "radio poll accepts only one answer"}
 	}
 
-	// Blank vote logic
-	if len(req.AnswerIDs) == 0 {
-		if row[3].Int64 == 0 {
-			respondError(w, http.StatusBadRequest, "this poll requires an answer")
-			return
-		}
-	}
-
-	for _, ansID := range req.AnswerIDs {
+	for _, ansID := range answerIDs {
 		arows, err := db.QueryRows(
 			`SELECT id FROM answers WHERE id = ? AND poll_id = ?`,
 			[]sqinn.Value{sqinn.Int64Value(ansID), sqinn.Int64Value(pollID)},
 			[]byte{sqinn.ValInt64},
 		)
 		if err != nil || len(arows) == 0 {
-			respondError(w, http.StatusBadRequest, fmt.Sprintf("answer %d not found", ansID))
-			return
+			return &voteError{http.StatusBadRequest, fmt.Sprintf("answer %d not found", ansID)}
 		}
 	}
 
-	// Check existing vote
 	vrows, err := db.QueryRows(
 		`SELECT id FROM votes WHERE poll_id = ? AND voter_hash = ?`,
 		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(voterHash)},
 		[]byte{sqinn.ValInt64},
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "db error")
-		return
+		return &voteError{http.StatusInternalServerError, "db error"}
 	}
 	if len(vrows) > 0 {
-		respondError(w, http.StatusConflict, "cpf already voted")
-		return
+		return &voteError{http.StatusConflict, "cpf already voted"}
 	}
 
-	answerIDsJSON, _ := json.Marshal(req.AnswerIDs)
+	answerIDsJSON, _ := json.Marshal(answerIDs)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Insert vote
 	db.MustExecParams(
 		`INSERT INTO votes (poll_id, voter_hash, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
 		1, 4,
@@ -724,19 +728,17 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
-	// Invalidate passcode after successful vote
 	db.MustExecParams(
 		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
 		1, 2,
 		[]sqinn.Value{
 			sqinn.StringValue(now),
-			sqinn.StringValue(cpfOriginal),
+			sqinn.StringValue(cpf),
 		},
 	)
 
 	logAction("VOTE_SUBMITTED", fmt.Sprintf("PollID: %d", pollID))
-
-	respondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
+	return nil
 }
 
 // Helper to simulate result notification
@@ -1035,6 +1037,21 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   </div>
   <button class="btn btn-success w-full">Confirmar Voto</button>
 </form>
+{{end}}
+
+{{define "vote_result"}}
+<div class="card bg-base-100 shadow-xl p-8 text-center space-y-6">
+  {{if .Error}}
+  <h2 class="text-2xl font-bold text-error">⚠️ Não foi possível registrar seu voto</h2>
+  <div class="alert alert-error">{{.Error}}</div>
+  {{else}}
+  <h2 class="text-3xl font-bold text-success">✅ Voto registrado!</h2>
+  <p class="text-lg">Obrigado por participar.</p>
+  {{end}}
+  <button hx-get="/ui/polls?cpf={{.CPF}}" hx-target="#app" class="btn btn-outline w-full">
+    Voltar às enquetes
+  </button>
+</div>
 {{end}}
 
 {{define "results"}}
@@ -1406,11 +1423,6 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	answerIDStrs := r.Form["answer_ids"]
-	if cpf == "" || len(answerIDStrs) == 0 {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "select an answer"})
-		return
-	}
-
 	var answerIDs []int64
 	for _, s := range answerIDStrs {
 		n, err := strconv.ParseInt(s, 10, 64)
@@ -1421,76 +1433,10 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 		answerIDs = append(answerIDs, n)
 	}
 
-	prows, err := db.QueryRows(`SELECT type, start_date, end_date FROM polls WHERE id = ?`,
-		[]sqinn.Value{sqinn.Int64Value(pollID)},
-		[]byte{sqinn.ValString, sqinn.ValString, sqinn.ValString},
-	)
-	if err != nil || len(prows) == 0 {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "poll not found"})
+	if voteErr := castVote(pollID, cpf, answerIDs); voteErr != nil {
+		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: voteErr.message})
 		return
 	}
-
-	row := prows[0]
-	pollType := row[0].String
-	startDate := row[1].String
-	endDate := row[2].String
-
-	if !isPollActive(startDate, endDate) {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "poll is no longer active"})
-		return
-	}
-	if pollType == "radio" && len(answerIDs) > 1 {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "radio poll accepts only one answer"})
-		return
-	}
-
-	for _, ansID := range answerIDs {
-		arows, err := db.QueryRows(`SELECT id FROM answers WHERE id = ? AND poll_id = ?`,
-			[]sqinn.Value{sqinn.Int64Value(ansID), sqinn.Int64Value(pollID)},
-			[]byte{sqinn.ValInt64},
-		)
-		if err != nil || len(arows) == 0 {
-			uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "answer not found in poll"})
-			return
-		}
-	}
-
-	vrows, err := db.QueryRows(`SELECT id FROM votes WHERE poll_id = ? AND cpf = ?`,
-		[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.StringValue(cpf)},
-		[]byte{sqinn.ValInt64},
-	)
-	if err != nil {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "db error"})
-		return
-	}
-	if len(vrows) > 0 {
-		uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf, Error: "cpf already voted on this poll"})
-		return
-	}
-
-	answerIDsJSON, _ := json.Marshal(answerIDs)
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	db.MustExecParams(
-		`INSERT INTO votes (poll_id, cpf, answer_ids, voted_at) VALUES (?, ?, ?, ?)`,
-		1, 4,
-		[]sqinn.Value{
-			sqinn.Int64Value(pollID),
-			sqinn.StringValue(cpf),
-			sqinn.StringValue(string(answerIDsJSON)),
-			sqinn.StringValue(now),
-		},
-	)
-
-	// Invalidate passcode after vote
-	db.MustExecParams(
-		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
-		1, 2,
-		[]sqinn.Value{
-			sqinn.StringValue(now),
-			sqinn.StringValue(cpf),
-		},
-	)
 
 	uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf})
 }
