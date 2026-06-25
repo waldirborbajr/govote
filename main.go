@@ -38,6 +38,13 @@ type Poll struct {
 	CreatedAt  string   `json:"created_at"`
 }
 
+type PollStats struct {
+	PollTitle  string   `json:"poll_title"`
+	TotalVotes int64    `json:"total_votes"`
+	Labels     []string `json:"labels"`
+	Values     []int64  `json:"values"`
+}
+
 type Answer struct {
 	ID           int64  `json:"id"`
 	PollID       int64  `json:"poll_id"`
@@ -402,6 +409,74 @@ func isRateLimited(ip string) bool {
 	validTimes = append(validTimes, now)
 	rateLimiter.visits.Store(ip, validTimes)
 	return false
+}
+
+func getAdminContext(r *http.Request) (adminID int64, isSuper bool) {
+	// Função mantida apenas por compatibilidade.
+	// Não está mais em uso (usamos getAuthenticatedAdmin).
+	return 0, false
+}
+
+func canAccessPoll(adminID int64, isSuper bool, pollID int64) bool {
+    if isSuper {
+        return true
+    }
+    // Verifica se a enquete pertence ao admin
+    rows, err := db.QueryRows("SELECT id FROM polls WHERE id = ? AND created_by = ?", 
+        []sqinn.Value{sqinn.Int64Value(pollID), sqinn.Int64Value(adminID)}, 
+        []byte{sqinn.ValInt64})
+    
+    return err == nil && len(rows) > 0
+}
+
+func getPollStats(pollID int64, adminID int64, isSuper bool) (*PollStats, error) {
+	stats := &PollStats{}
+
+	// Verifica permissão
+	if !isSuper {
+		rows, err := db.QueryRows("SELECT id FROM polls WHERE id = ? AND created_by = ?", 
+			[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.Int64Value(adminID)}, 
+			[]byte{sqinn.ValInt64})
+		if err != nil || len(rows) == 0 {
+			return nil, fmt.Errorf("acesso negado ou enquete não encontrada")
+		}
+	}
+
+	// Título do Poll
+	rows, _ := db.QueryRows("SELECT title FROM polls WHERE id = ?", 
+		[]sqinn.Value{sqinn.Int64Value(pollID)}, 
+		[]byte{sqinn.ValString})
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("enquete não encontrada")
+	}
+	stats.PollTitle = rows[0][0].String
+
+	// Total de votos
+	rows, _ = db.QueryRows("SELECT count(*) FROM votes WHERE poll_id = ?", 
+		[]sqinn.Value{sqinn.Int64Value(pollID)}, 
+		[]byte{sqinn.ValInt64})
+	stats.TotalVotes = rows[0][0].Int64
+
+	// Votos por opção
+	query := `
+		SELECT a.text, COUNT(v.id) as qtd 
+		FROM answers a 
+		LEFT JOIN votes v ON v.poll_id = a.poll_id 
+		                  AND v.answer_ids LIKE '%' || a.id || '%'
+		WHERE a.poll_id = ?
+		GROUP BY a.id, a.text
+		ORDER BY a.display_order`
+
+	rows, _ = db.QueryRows(query, 
+		[]sqinn.Value{sqinn.Int64Value(pollID)}, 
+		[]byte{sqinn.ValString, sqinn.ValInt64})
+
+	for _, row := range rows {
+		stats.Labels = append(stats.Labels, row[0].String)
+		stats.Values = append(stats.Values, row[1].Int64)
+	}
+
+	return stats, nil
 }
 
 func getClientIP(r *http.Request) string {
@@ -1268,6 +1343,33 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   </form>
 </div>
 {{end}}
+
+{{define "poll_stats"}}
+<div class="card bg-base-100 shadow-xl p-6">
+  <h2 class="text-2xl font-bold mb-4">Estatísticas: {{.PollTitle}}</h2>
+  <div class="stats shadow mb-4">
+    <div class="stat"><div class="stat-title">Total de Votos</div><div class="stat-value">{{.TotalVotes}}</div></div>
+  </div>
+  
+  <canvas id="pollChart"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  fetch('/ui/polls/stats/{{.PollID}}')
+    .then(r => r.json())
+    .then(data => {
+      new Chart(document.getElementById('pollChart'), {
+        type: 'pie',
+        data: {
+          labels: data.labels,
+          datasets: [{ data: data.values, backgroundColor: ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0'] }]
+        }
+      });
+    });
+</script>
+{{end}}
+
 `))
 
 type uiPageData struct {
@@ -1766,6 +1868,7 @@ func handleUIResults(w http.ResponseWriter, r *http.Request) {
 func handleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
+
 	usernameRaw := strings.TrimSpace(r.FormValue("username"))
 	username := strings.ReplaceAll(strings.ReplaceAll(usernameRaw, ".", ""), "-", "")
 
@@ -1792,10 +1895,13 @@ func handleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 	passcode := generatePasscode()
 
 	db.MustExecParams(`UPDATE admin SET passcode = ? WHERE id = ?`, 1, 2,
-		[]sqinn.Value{sqinn.StringValue(passcode), sqinn.Int64Value(rows[0][0].Int64)})
+		[]sqinn.Value{
+			sqinn.StringValue(passcode),
+			sqinn.Int64Value(rows[0][0].Int64),
+		})
 
 	whatsappURL := buildWhatsAppURL(phone, passcode)
-	fmt.Printf("[PoC WhatsApp Admin Admin OTP Token] User: %s | Passcode: %s\n", username, passcode)
+	fmt.Printf("[PoC WhatsApp Admin OTP] User: %s | Passcode: %s\n", username, passcode)
 
 	uiTemplates.ExecuteTemplate(w, "admin_passcode_sent", uiPageData{WhatsAppURL: whatsappURL})
 }
@@ -2018,6 +2124,25 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleUIVote(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/ui/polls/") && strings.HasSuffix(r.URL.Path, "/results"):
 		handleUIResults(w, r)
+
+case strings.HasPrefix(r.URL.Path, "/ui/polls/stats/") && r.Method == http.MethodGet:
+    admin, err := getAuthenticatedAdmin(r)
+    if err != nil {
+        respondError(w, http.StatusUnauthorized, "Acesso negado")
+        return
+    }
+
+    idStr := strings.TrimPrefix(r.URL.Path, "/ui/polls/stats/")
+    pollID, _ := strconv.ParseInt(idStr, 10, 64)
+
+    stats, err := getPollStats(pollID, admin.ID, admin.IsSuper)
+    if err != nil {
+        respondError(w, http.StatusForbidden, err.Error())
+        return
+    }
+
+    respondJSON(w, http.StatusOK, stats)
+
 	case r.URL.Path == "/ui/polls/create" && r.Method == http.MethodGet:
 		handleUICreatePollForm(w, r)
 	case r.URL.Path == "/ui/polls/create" && r.Method == http.MethodPost:
