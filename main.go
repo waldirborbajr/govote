@@ -2,13 +2,22 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"html/template"
 	"log"
-	"math/rand"
+	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -155,18 +164,37 @@ func checkPassword(storedHash, password string) bool {
 	return hex.EncodeToString(h.Sum(nil)) == hex.EncodeToString(expectedHash)
 }
 
+// generateJWT cria um token assinado no formato username|expiry|hmac(username|expiry).
+// Não é um JWT padrão (RFC 7519), mas agora é assinado com HMAC-SHA256, então não pode
+// ser forjado sem conhecer jwtSecret.
 func generateJWT(username string) string {
 	expiry := time.Now().Add(24 * time.Hour).Unix()
-	return fmt.Sprintf("%s|%d", username, expiry)
+	payload := fmt.Sprintf("%s|%d", username, expiry)
+	sig := signPayload(payload)
+	return payload + "|" + sig
+}
+
+func signPayload(payload string) string {
+	mac := hmac.New(sha256.New, jwtSecret)
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func validateJWT(token string) (string, bool) {
-	parts := strings.Split(token, "|")
-	if len(parts) != 2 {
+	parts := strings.SplitN(token, "|", 3)
+	if len(parts) != 3 {
 		return "", false
 	}
 	username := parts[0]
 	expiryStr := parts[1]
+	sig := parts[2]
+
+	payload := username + "|" + expiryStr
+	expectedSig := signPayload(payload)
+	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
+		return "", false
+	}
+
 	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
 	if err != nil || time.Now().Unix() > expiry {
 		return "", false
@@ -257,7 +285,7 @@ func initDB() error {
 		`CREATE TABLE IF NOT EXISTS votes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			poll_id INTEGER NOT NULL,
-			voter_hash TEXT NOT NULL, 
+			voter_hash TEXT NOT NULL,
 			answer_ids TEXT NOT NULL,
 			voted_at TEXT NOT NULL,
 			UNIQUE(poll_id, voter_hash),
@@ -293,7 +321,7 @@ func initDB() error {
         defaultHash := hashPassword("123Mudar")
         now := time.Now().UTC().Format(time.RFC3339)
         db.MustExecParams(
-            `INSERT INTO admin (username, password_hash, created_at) VALUES (?, ?, ?)`,
+            `INSERT INTO admin (username, password_hash, is_super, needs_change, created_at) VALUES (?, ?, 1, 1, ?)`,
             1, 3,
             []sqinn.Value{
                 sqinn.StringValue("admin"),
@@ -320,11 +348,11 @@ func initDB() error {
                 sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
             },
         )
-        
+
         // Recupera o ID da última enquete (usando a variável rows existente)
         rows, _ = db.QueryRows("SELECT id FROM polls ORDER BY id DESC LIMIT 1", []sqinn.Value{}, []byte{sqinn.ValInt64})
         pollID := rows[0][0].Int64
-        
+
         // Insere as opções
         cores := []string{"Azul", "Branco", "Vermelho", "Verde", "Preto"}
         for i, cor := range cores {
@@ -422,10 +450,10 @@ func canAccessPoll(adminID int64, isSuper bool, pollID int64) bool {
         return true
     }
     // Verifica se a enquete pertence ao admin
-    rows, err := db.QueryRows("SELECT id FROM polls WHERE id = ? AND created_by = ?", 
-        []sqinn.Value{sqinn.Int64Value(pollID), sqinn.Int64Value(adminID)}, 
+    rows, err := db.QueryRows("SELECT id FROM polls WHERE id = ? AND created_by = ?",
+        []sqinn.Value{sqinn.Int64Value(pollID), sqinn.Int64Value(adminID)},
         []byte{sqinn.ValInt64})
-    
+
     return err == nil && len(rows) > 0
 }
 
@@ -434,8 +462,8 @@ func getPollStats(pollID int64, adminID int64, isSuper bool) (*PollStats, error)
 
 	// Verifica permissão
 	if !isSuper {
-		rows, err := db.QueryRows("SELECT id FROM polls WHERE id = ? AND created_by = ?", 
-			[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.Int64Value(adminID)}, 
+		rows, err := db.QueryRows("SELECT id FROM polls WHERE id = ? AND created_by = ?",
+			[]sqinn.Value{sqinn.Int64Value(pollID), sqinn.Int64Value(adminID)},
 			[]byte{sqinn.ValInt64})
 		if err != nil || len(rows) == 0 {
 			return nil, fmt.Errorf("acesso negado ou enquete não encontrada")
@@ -443,8 +471,8 @@ func getPollStats(pollID int64, adminID int64, isSuper bool) (*PollStats, error)
 	}
 
 	// Título do Poll
-	rows, _ := db.QueryRows("SELECT title FROM polls WHERE id = ?", 
-		[]sqinn.Value{sqinn.Int64Value(pollID)}, 
+	rows, _ := db.QueryRows("SELECT title FROM polls WHERE id = ?",
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
 		[]byte{sqinn.ValString})
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("enquete não encontrada")
@@ -452,23 +480,23 @@ func getPollStats(pollID int64, adminID int64, isSuper bool) (*PollStats, error)
 	stats.PollTitle = rows[0][0].String
 
 	// Total de votos
-	rows, _ = db.QueryRows("SELECT count(*) FROM votes WHERE poll_id = ?", 
-		[]sqinn.Value{sqinn.Int64Value(pollID)}, 
+	rows, _ = db.QueryRows("SELECT count(*) FROM votes WHERE poll_id = ?",
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
 		[]byte{sqinn.ValInt64})
 	stats.TotalVotes = rows[0][0].Int64
 
 	// Votos por opção
 	query := `
-		SELECT a.text, COUNT(v.id) as qtd 
-		FROM answers a 
-		LEFT JOIN votes v ON v.poll_id = a.poll_id 
+		SELECT a.text, COUNT(v.id) as qtd
+		FROM answers a
+		LEFT JOIN votes v ON v.poll_id = a.poll_id
 		                  AND v.answer_ids LIKE '%' || a.id || '%'
 		WHERE a.poll_id = ?
 		GROUP BY a.id, a.text
 		ORDER BY a.display_order`
 
-	rows, _ = db.QueryRows(query, 
-		[]sqinn.Value{sqinn.Int64Value(pollID)}, 
+	rows, _ = db.QueryRows(query,
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
 		[]byte{sqinn.ValString, sqinn.ValInt64})
 
 	for _, row := range rows {
@@ -523,7 +551,7 @@ func handleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	passcode := generatePasscode()
 
 	db.MustExecParams(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) 
+		`INSERT INTO voters (cpf, name, phone, passcode, verified_at)
 		 VALUES (?, ?, ?, ?, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
 		1, 4,
@@ -595,8 +623,8 @@ func handleListPolls(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	rows, err := db.QueryRows(
-		`SELECT id, title, type, start_date, end_date, created_by, created_at 
-		 FROM polls 
+		`SELECT id, title, type, start_date, end_date, created_by, created_at
+		 FROM polls
 		 WHERE start_date <= ? AND end_date >= ?
 		 ORDER BY created_at DESC`,
 		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(now)},
@@ -963,7 +991,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-  
+
   <script>
     function formatCPF(input) {
       let v = input.value.replace(/\D/g, '');
@@ -990,7 +1018,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <div class="max-w-3xl mx-auto bg-base-100 p-8 rounded-3xl shadow-2xl">
     <h1 class="text-4xl font-bold mb-2 text-center text-primary">🗳️ Vote API</h1>
     <p class="text-center text-base-content/70 mb-10">Sistema de Votação Simples e Seguro</p>
-    
+
     <div id="app">{{template "index" .}}</div>
   </div>
 </body>
@@ -1045,17 +1073,17 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 <div class="space-y-6">
   <h2 class="text-3xl font-bold text-center">Painel Administrativo</h2>
   <p class="text-center text-sm font-semibold">Logado como: <span class="text-primary">{{.AdminUser.Username}}</span></p>
-  
+
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     <button hx-get="/ui/polls/create" hx-target="#app" class="btn btn-primary h-24 text-lg">
       ➕ Criar Nova Enquete
     </button>
-    
+
     <button hx-get="/ui/admin/polls" hx-target="#app" class="btn btn-secondary h-24 text-lg">
       📊 Ver Minhas Enquetes
     </button>
-    
-    <button hx-get="/admin/stats" hx-target="#app" class="btn btn-accent h-24 text-lg">
+
+    <button hx-get="/ui/admin/stats" hx-target="#app" class="btn btn-accent h-24 text-lg">
       📈 Estatísticas Globais
     </button>
 
@@ -1179,7 +1207,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
     </div>
     <button class="btn btn-primary w-full">Gerar Código de Acesso</button>
   </form>
-  
+
   <form hx-post="/ui/verify" hx-target="#app" hx-swap="innerHTML" class="card bg-base-200 p-6 space-y-4">
     <h2 class="text-xl font-bold">2. Verificar</h2>
     <input name="cpf" placeholder="CPF" class="input input-bordered w-full" required>
@@ -1242,7 +1270,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
       <label class="label"><span class="label-text">Título</span></label>
       <input name="title" placeholder="Ex: Votação da CIPA" class="input input-bordered w-full" required>
     </div>
-    
+
     <div class="grid grid-cols-2 gap-4">
       <div class="form-control">
         <label class="label"><span class="label-text">Início</span></label>
@@ -1271,7 +1299,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
       <label class="label"><span class="label-text">Opções (uma por linha)</span></label>
       <textarea name="answers" class="textarea textarea-bordered h-24" required></textarea>
     </div>
-    
+
     <button type="submit" class="btn btn-primary w-full mt-4">Publicar Enquete</button>
   </form>
   <button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full mt-2">Cancelar</button>
@@ -1315,7 +1343,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
 <div class="card bg-base-100 shadow-xl p-8 max-w-md mx-auto space-y-6">
   <h2 class="text-2xl font-bold text-center text-secondary">🔐 Login Administrador</h2>
   {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-  
+
   <form hx-post="/ui/admin/request-otp" hx-target="#app" class="bg-base-200 p-4 rounded-xl space-y-2">
     <span class="text-sm font-semibold text-gray-500 block">Usuários Normais: Solicite senha dinâmica via WhatsApp</span>
     <input name="username" placeholder="Seu CPF de Admin" class="input input-bordered w-full" required>
@@ -1350,7 +1378,7 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
   <div class="stats shadow mb-4">
     <div class="stat"><div class="stat-title">Total de Votos</div><div class="stat-value">{{.TotalVotes}}</div></div>
   </div>
-  
+
   <canvas id="pollChart"></canvas>
 </div>
 
@@ -1366,6 +1394,65 @@ var uiTemplates = template.Must(template.New("ui").Parse(`
           datasets: [{ data: data.values, backgroundColor: ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0'] }]
         }
       });
+    });
+</script>
+{{end}}
+
+{{define "global_stats"}}
+<div class="card bg-base-100 shadow-xl p-6 space-y-6">
+  <h2 class="text-2xl font-bold">📈 Estatísticas Globais</h2>
+
+  <div class="stats shadow" id="globalStatsSummary">
+    <div class="stat">
+      <div class="stat-title">Total de Votos</div>
+      <div class="stat-value" id="globalTotalVotes">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-title">Comparecimento</div>
+      <div class="stat-value" id="globalTurnout">—</div>
+    </div>
+  </div>
+
+  <div>
+    <h3 class="font-semibold mb-2">Votos por hora</h3>
+    <canvas id="globalTimelineChart"></canvas>
+    <p id="globalTimelineEmpty" class="text-sm opacity-60 hidden">Ainda não há votos registrados.</p>
+  </div>
+
+  <button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full">← Painel Administrativo</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  fetch('/admin/stats')
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('globalTotalVotes').textContent = data.total_votes ?? 0;
+      document.getElementById('globalTurnout').textContent = (data.turnout_pct ?? 0).toFixed(1) + '%';
+
+      const timeline = data.timeline || [];
+      if (timeline.length === 0) {
+        document.getElementById('globalTimelineEmpty').classList.remove('hidden');
+        return;
+      }
+
+      new Chart(document.getElementById('globalTimelineChart'), {
+        type: 'line',
+        data: {
+          labels: timeline.map(t => t.hour),
+          datasets: [{
+            label: 'Votos por hora',
+            data: timeline.map(t => t.count),
+            borderColor: '#36A2EB',
+            backgroundColor: 'rgba(54, 162, 235, 0.2)',
+            tension: 0.2,
+            fill: true
+          }]
+        }
+      });
+    })
+    .catch(() => {
+      document.getElementById('globalTimelineEmpty').classList.remove('hidden');
     });
 </script>
 {{end}}
@@ -1495,7 +1582,7 @@ func handleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	passcode := generatePasscode()
 
 	db.MustExecParams(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at) 
+		`INSERT INTO voters (cpf, name, phone, passcode, verified_at)
 		 VALUES (?, ?, ?, ?, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
 		1, 4,
@@ -1558,7 +1645,7 @@ func handleUIVerify(w http.ResponseWriter, r *http.Request) {
 func renderUIVoterPolls(w http.ResponseWriter, cpf, errMsg string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	rows, err := db.QueryRows(
-		`SELECT id, title, type, start_date, end_date, created_at FROM polls 
+		`SELECT id, title, type, start_date, end_date, created_at FROM polls
 		 WHERE start_date <= ? AND end_date >= ? ORDER BY created_at DESC`,
 		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(now)},
 		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
@@ -1679,6 +1766,11 @@ func handleUIVote(w http.ResponseWriter, r *http.Request) {
 	uiTemplates.ExecuteTemplate(w, "vote_result", uiPageData{CPF: cpf})
 }
 
+func handleUIGlobalStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.ExecuteTemplate(w, "global_stats", uiPageData{})
+}
+
 func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.QueryRows("SELECT count(DISTINCT voter_hash) FROM votes", nil, []byte{sqinn.ValInt64})
 	if err != nil || len(rows) == 0 {
@@ -1691,12 +1783,12 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	turnout := (float64(totalVotes) / totalEligible) * 100
 
 	trows, _ := db.QueryRows(
-		`SELECT strftime('%Y-%m-%dT%H:00:00', voted_at) as hour, count(*) 
+		`SELECT strftime('%Y-%m-%dT%H:00:00', voted_at) as hour, count(*)
          FROM votes GROUP BY hour ORDER BY hour ASC`,
 		nil, []byte{sqinn.ValString, sqinn.ValInt64},
 	)
 
-	var timeline []map[string]interface{}
+	timeline := make([]map[string]interface{}, 0, len(trows))
 	for _, row := range trows {
 		timeline = append(timeline, map[string]interface{}{
 			"hour":  row[0].String,
@@ -2029,7 +2121,7 @@ func handleUIManageAdminsPost(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	db.MustExecParams(
-		`INSERT INTO admin (username, name, phone, is_super, enabled, created_at) 
+		`INSERT INTO admin (username, name, phone, is_super, enabled, created_at)
 		 VALUES (?, ?, ?, 0, ?, ?)
 		 ON CONFLICT(username) DO UPDATE SET name=excluded.name, phone=excluded.phone, enabled=excluded.enabled`,
 		1, 5,
@@ -2093,6 +2185,8 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleResults(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/admin/stats":
 		handleAdminStats(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/admin/stats":
+		handleUIGlobalStats(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/verify-form":
 		handleUIVerifyForm(w, r)
 	// UI Routes
@@ -2118,6 +2212,8 @@ func router(w http.ResponseWriter, r *http.Request) {
 		handleUIAdminPolls(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/polls":
 		handleUIPolls(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/ui/polls/create":
+		handleUICreatePollForm(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/ui/polls/") && !strings.Contains(r.URL.Path, "/vote") && !strings.Contains(r.URL.Path, "/results"):
 		handleUIPollDetail(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/ui/polls/") && strings.HasSuffix(r.URL.Path, "/vote"):
@@ -2143,8 +2239,6 @@ case strings.HasPrefix(r.URL.Path, "/ui/polls/stats/") && r.Method == http.Metho
 
     respondJSON(w, http.StatusOK, stats)
 
-	case r.URL.Path == "/ui/polls/create" && r.Method == http.MethodGet:
-		handleUICreatePollForm(w, r)
 	case r.URL.Path == "/ui/polls/create" && r.Method == http.MethodPost:
 		handleUICreatePoll(w, r)
 	case r.URL.Path == "/ui/admin/manage-admins" && r.Method == http.MethodGet:
@@ -2153,6 +2247,89 @@ case strings.HasPrefix(r.URL.Path, "/ui/polls/stats/") && r.Method == http.Metho
 		handleUIManageAdminsPost(w, r)
 	default:
 		respondError(w, http.StatusNotFound, "endpoint not found")
+	}
+}
+
+// ============================================================================
+// TLS (HTTPS local - certificado autoassinado)
+// ============================================================================
+
+const (
+	tlsCertFile = "cert.pem"
+	tlsKeyFile  = "key.pem"
+)
+
+// ensureSelfSignedCert carrega cert.pem/key.pem do disco se existirem,
+// ou gera um novo par autoassinado (válido para localhost/127.0.0.1) caso contrário.
+func ensureSelfSignedCert() (tls.Certificate, error) {
+	if cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile); err == nil {
+		return cert, nil
+	}
+
+	fmt.Println("🔑 Certificado não encontrado, gerando novo certificado autoassinado...")
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("erro ao gerar chave privada: %w", err)
+	}
+
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("erro ao gerar número de série: %w", err)
+	}
+
+	certTemplate := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"Sistema de Votação - Dev Local"},
+			CommonName:   "localhost",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("erro ao criar certificado: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+
+	keyBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("erro ao serializar chave privada: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	if err := os.WriteFile(tlsCertFile, certPEM, 0644); err != nil {
+		return tls.Certificate{}, fmt.Errorf("erro ao salvar %s: %w", tlsCertFile, err)
+	}
+	if err := os.WriteFile(tlsKeyFile, keyPEM, 0600); err != nil {
+		return tls.Certificate{}, fmt.Errorf("erro ao salvar %s: %w", tlsKeyFile, err)
+	}
+
+	fmt.Printf("✅ Certificado autoassinado gerado: %s / %s (válido 10 anos)\n", tlsCertFile, tlsKeyFile)
+
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// httpsRedirectHandler responde a qualquer requisição HTTP redirecionando
+// para a mesma URL em HTTPS, na porta configurada.
+func httpsRedirectHandler(httpsPort string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		target := "https://" + host + httpsPort + r.URL.RequestURI()
+		http.Redirect(w, r, target, http.StatusMovedPermanently)
 	}
 }
 
@@ -2168,9 +2345,32 @@ func main() {
 		log.Fatalf("init db failed: %v", err)
 	}
 
-	srv := &http.Server{
-		Addr:         ":8080",
+	cert, err := ensureSelfSignedCert()
+	if err != nil {
+		log.Fatalf("falha ao preparar certificado TLS: %v", err)
+	}
+
+	const (
+		httpAddr  = ":8080"
+		httpsAddr = ":8443"
+		httpsPort = ":8443" // usado para montar a URL de redirecionamento
+	)
+
+	httpsSrv := &http.Server{
+		Addr:         httpsAddr,
 		Handler:      http.HandlerFunc(router),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+
+	httpSrv := &http.Server{
+		Addr:         httpAddr,
+		Handler:      httpsRedirectHandler(httpsPort),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -2180,11 +2380,17 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		fmt.Println("🚀 Vote API iniciada em http://localhost:8080")
-		fmt.Println("   Pressione Ctrl+C para encerrar gracefulmente.")
+		fmt.Println("🔒 Vote API (HTTPS) iniciada em https://localhost" + httpsAddr)
+		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("❌ Erro no servidor HTTPS: %v", err)
+		}
+	}()
 
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Server error: %v", err)
+	go func() {
+		fmt.Println("↪️  Redirecionador HTTP → HTTPS em http://localhost" + httpAddr)
+		fmt.Println("   Pressione Ctrl+C para encerrar gracefulmente.")
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("❌ Erro no servidor HTTP: %v", err)
 		}
 	}()
 
@@ -2194,11 +2400,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("⚠️  Erro durante shutdown: %v", err)
-	} else {
-		fmt.Println("✅ Servidor encerrado com sucesso (todas as sessões ativas foram finalizadas)")
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("⚠️  Erro durante shutdown do servidor HTTP: %v", err)
 	}
+	if err := httpsSrv.Shutdown(ctx); err != nil {
+		log.Printf("⚠️  Erro durante shutdown do servidor HTTPS: %v", err)
+	}
+	fmt.Println("✅ Servidores encerrados com sucesso (todas as sessões ativas foram finalizadas)")
 
 	fmt.Println("💾 Banco de dados fechado.")
 }
