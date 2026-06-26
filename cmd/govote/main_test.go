@@ -9,13 +9,20 @@ import (
 	"time"
 
 	sqinn "github.com/cvilsmeier/sqinn-go/v2"
+
+	"github.com/waldirborbajr/govote/internal/admin"
+	"github.com/waldirborbajr/govote/internal/api"
+	"github.com/waldirborbajr/govote/internal/notify"
+	"github.com/waldirborbajr/govote/internal/server"
+	"github.com/waldirborbajr/govote/internal/storage"
+	"github.com/waldirborbajr/govote/internal/ui"
 )
 
 func TestAPIEndpoints(t *testing.T) {
-	db = sqinn.MustLaunch(sqinn.Options{Db: ":memory:"})
-	defer db.Close()
+	storage.DB = sqinn.MustLaunch(sqinn.Options{Db: ":memory:"})
+	defer storage.DB.Close()
 
-	if err := initDB(); err != nil {
+	if err := storage.InitDB(); err != nil {
 		t.Fatalf("initDB failed: %v", err)
 	}
 
@@ -26,7 +33,7 @@ func TestAPIEndpoints(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 		rr := httptest.NewRecorder()
-		handleUIRequestPasscode(rr, req)
+		ui.HandleUIRequestPasscode(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Errorf("expected status 200, got %d", rr.Code)
@@ -53,7 +60,7 @@ func TestAPIEndpoints(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		rr := httptest.NewRecorder()
-		handleCreatePoll(rr, req)
+		api.HandleCreatePoll(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d", rr.Code)
@@ -64,7 +71,7 @@ func TestAPIEndpoints(t *testing.T) {
 	t.Run("ListPolls", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/polls", nil)
 		rr := httptest.NewRecorder()
-		handleListPolls(rr, req)
+		api.HandleListPolls(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d", rr.Code)
@@ -84,7 +91,7 @@ func TestAPIEndpoints(t *testing.T) {
 
 		createReq := httptest.NewRequest(http.MethodPost, "/polls", bytes.NewBufferString(pollBody))
 		createReq.Header.Set("Content-Type", "application/json")
-		handleCreatePoll(httptest.NewRecorder(), createReq)
+		api.HandleCreatePoll(httptest.NewRecorder(), createReq)
 
 		// Vota
 		voteBody := `{"cpf":"12345678901","answer_ids":[1]}`
@@ -92,7 +99,7 @@ func TestAPIEndpoints(t *testing.T) {
 		voteReq.Header.Set("Content-Type", "application/json")
 
 		voteRR := httptest.NewRecorder()
-		handleVote(voteRR, voteReq)
+		api.HandleVote(voteRR, voteReq)
 
 		if voteRR.Code != http.StatusCreated && voteRR.Code != http.StatusConflict {
 			t.Errorf("unexpected vote status: %d", voteRR.Code)
@@ -101,7 +108,7 @@ func TestAPIEndpoints(t *testing.T) {
 
 	// Test 5: WhatsApp URL
 	t.Run("WhatsAppURL", func(t *testing.T) {
-		url := buildWhatsAppURL("5511987654321", "4321")
+		url := notify.BuildWhatsAppURL("5511987654321", "4321")
 		if !strings.Contains(url, "wa.me/5511987654321") {
 			t.Error("WhatsApp URL format incorrect")
 		}
@@ -117,7 +124,7 @@ func TestAPIEndpoints(t *testing.T) {
 
 // Smoke test da UI
 func TestServerUI(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(router))
+	ts := httptest.NewServer(http.HandlerFunc(server.Router))
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/")
@@ -138,7 +145,7 @@ func TestAdminLogin(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	rr := httptest.NewRecorder()
-	handleAdminLoginPost(rr, req)
+	admin.HandleAdminLoginPost(rr, req)
 
 	// Aceita tanto sucesso direto quanto redirecionamento para troca de senha
 	if rr.Code != http.StatusOK {
