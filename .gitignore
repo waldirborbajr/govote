@@ -33,3 +33,6 @@ go.work.sum
 votes.db
 /cert.pem
 /key.pem
+
+# Compiled binary
+/govote
