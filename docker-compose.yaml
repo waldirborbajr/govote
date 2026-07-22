@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  govote:
+    image: ghcr.io/waldirborbajr/govote:latest
+    container_name: govote
+    restart: always
+    ports:
+      - "8080:8080"   # HTTP (redireciona para HTTPS)
+      - "8443:8443"   # HTTPS
+    volumes:
+      - ./votes.db:/votes.db   # Persistência do banco SQLite
+      # - ./cert.pem:/cert.pem     # se quiser usar certificados próprios
+      # - ./key.pem:/key.pem
+    environment:
+      - TZ=America/Sao_Paulo
