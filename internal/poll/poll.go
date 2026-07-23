@@ -69,25 +69,64 @@ func GetPollStats(pollID int64, adminID int64, isSuper bool) (*models.PollStats,
 	rows, _ = storage.DB.QueryRows("SELECT count(*) FROM votes WHERE poll_id = ?",
 		[]sqinn.Value{sqinn.Int64Value(pollID)},
 		[]byte{sqinn.ValInt64})
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("erro ao contar votos")
+	}
 	stats.TotalVotes = rows[0][0].Int64
 
-	// Votos por opção
-	query := `
-		SELECT a.text, COUNT(v.id) as qtd
-		FROM answers a
-		LEFT JOIN votes v ON v.poll_id = a.poll_id
-		                  AND v.answer_ids LIKE '%' || a.id || '%'
-		WHERE a.poll_id = ?
-		GROUP BY a.id, a.text
-		ORDER BY a.display_order`
-
-	rows, _ = storage.DB.QueryRows(query,
+	// Votos por opção. NOTA: isso antes usava
+	// `v.answer_ids LIKE '%' || a.id || '%'`, que é uma comparação de
+	// substring sobre um ID numérico — a resposta de id=1 também "casava"
+	// com votos em [10], [21], [1,10] etc, inflando a contagem. Em vez
+	// disso, buscamos as respostas do poll e os answer_ids (JSON) de cada
+	// voto e contamos em Go, com igualdade exata de ID (mesma lógica já
+	// usada em api.HandleResults).
+	arows, err := storage.DB.QueryRows(
+		"SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC",
 		[]sqinn.Value{sqinn.Int64Value(pollID)},
-		[]byte{sqinn.ValString, sqinn.ValInt64})
+		[]byte{sqinn.ValInt64, sqinn.ValString},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao buscar respostas: %w", err)
+	}
 
-	for _, row := range rows {
-		stats.Labels = append(stats.Labels, row[0].String)
-		stats.Values = append(stats.Values, row[1].Int64)
+	type answerCount struct {
+		text  string
+		votes int64
+	}
+	order := make([]int64, 0, len(arows))
+	counts := make(map[int64]*answerCount, len(arows))
+	for _, arow := range arows {
+		id := arow[0].Int64
+		order = append(order, id)
+		counts[id] = &answerCount{text: arow[1].String}
+	}
+
+	vrows, err := storage.DB.QueryRows(
+		"SELECT answer_ids FROM votes WHERE poll_id = ?",
+		[]sqinn.Value{sqinn.Int64Value(pollID)},
+		[]byte{sqinn.ValString},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao buscar votos: %w", err)
+	}
+
+	for _, vrow := range vrows {
+		var ids []int64
+		if err := json.Unmarshal([]byte(vrow[0].String), &ids); err != nil {
+			continue
+		}
+		for _, id := range ids {
+			if ac, ok := counts[id]; ok {
+				ac.votes++
+			}
+		}
+	}
+
+	for _, id := range order {
+		ac := counts[id]
+		stats.Labels = append(stats.Labels, ac.text)
+		stats.Values = append(stats.Values, ac.votes)
 	}
 
 	return stats, nil
