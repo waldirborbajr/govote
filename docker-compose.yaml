@@ -14,3 +14,7 @@ services:
       # - ./key.pem:/key.pem
     environment:
       - TZ=America/Sao_Paulo
+      # Obrigatório em produção: gere valores aleatórios longos, ex.
+      # `openssl rand -hex 32`, e nunca reutilize os defaults de dev.
+      - GOVOTE_JWT_SECRET=changeme-generate-a-long-random-value
+      - GOVOTE_CPF_PEPPER=changeme-generate-a-long-random-value
