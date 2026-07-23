@@ -1,3 +1,5 @@
+// Package admin implements the administrator authentication workflows (OTP
+// login, password change) and super-admin management of other admins.
 package admin
 
 import (
@@ -15,6 +17,7 @@ import (
 	"github.com/waldirborbajr/govote/internal/web"
 )
 
+// HandleUIRequestAdminOTP agora suporta Master Admin + Normais via telefone
 func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -27,6 +30,7 @@ func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Busca por telefone (funciona para admin master e admins normais)
 	rows, err := storage.DB.QueryRows(`SELECT id, username, enabled FROM admin WHERE phone = ?`,
 		[]sqinn.Value{sqinn.StringValue(phone)},
 		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValInt64},
@@ -56,7 +60,7 @@ func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 	web.Templates.ExecuteTemplate(w, "admin_passcode_sent", web.PageData{WhatsAppURL: whatsappURL})
 }
 
-// HandleAdminLoginPost (mantido com suporte a OTP para todos)
+// HandleAdminLoginPost autentica via OTP (agora para Master e Normais)
 func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -82,22 +86,15 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if username == "admin" {
-		// Master agora também usa OTP (passcode)
-		storedOTP := rows[0][5].String
-		if storedOTP == "" || !security.CheckPasscode(storedOTP, password) {
-			web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."})
-			return
-		}
-		storage.DB.MustExecParams(`UPDATE admin SET passcode = NULL WHERE id = ?`, 1, 1, []sqinn.Value{sqinn.Int64Value(rows[0][0].Int64)})
-	} else {
-		storedOTP := rows[0][5].String
-		if storedOTP == "" || !security.CheckPasscode(storedOTP, password) {
-			web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Token dinâmico inválido ou expirado."})
-			return
-		}
-		storage.DB.MustExecParams(`UPDATE admin SET passcode = NULL WHERE id = ?`, 1, 1, []sqinn.Value{sqinn.Int64Value(rows[0][0].Int64)})
+	// OTP para Master e Normais
+	storedOTP := rows[0][5].String
+	if storedOTP == "" || !security.CheckPasscode(storedOTP, password) {
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."})
+		return
 	}
+
+	// Limpa o passcode após uso
+	storage.DB.MustExecParams(`UPDATE admin SET passcode = NULL WHERE id = ?`, 1, 1, []sqinn.Value{sqinn.Int64Value(rows[0][0].Int64)})
 
 	token := security.GenerateJWT(username)
 	http.SetCookie(w, &http.Cookie{
@@ -118,4 +115,102 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
 }
 
-// ... resto do arquivo (HandleAdminChangePassword, ManageAdmins etc.) permanece igual
+// HandleAdminChangePassword (mantido para casos de troca de senha)
+func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	newPass := r.FormValue("new_password")
+
+	if len(newPass) < 8 {
+		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Senha deve ter no mínimo 8 caracteres."})
+		return
+	}
+
+	storage.DB.MustExecParams(`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = ?`,
+		1, 2,
+		[]sqinn.Value{
+			sqinn.StringValue(security.HashPassword(newPass)),
+			sqinn.StringValue("admin"),
+		})
+
+	adminObj := &models.Admin{ID: 1, Username: "admin", IsSuper: true, Enabled: true}
+	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
+}
+
+// HandleUIManageAdmins renders the super-admin management page.
+func HandleUIManageAdmins(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	admin, err := web.GetAuthenticatedAdmin(r)
+	if err != nil || !admin.IsSuper {
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso reservado exclusivamente ao super administrador."})
+		return
+	}
+	renderManageAdminsPage(w, admin, "", "")
+}
+
+// HandleUIManageAdminsPost creates or updates an admin from the management form.
+func HandleUIManageAdminsPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	admin, err := web.GetAuthenticatedAdmin(r)
+	if err != nil || !admin.IsSuper {
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Operação não autorizada."})
+		return
+	}
+
+	r.ParseForm()
+	name := strings.TrimSpace(r.FormValue("name"))
+	cpfRaw := strings.TrimSpace(r.FormValue("cpf"))
+	phoneRaw := strings.TrimSpace(r.FormValue("phone"))
+	enabledBool := r.FormValue("enabled") == "true"
+
+	cpf := strings.ReplaceAll(strings.ReplaceAll(cpfRaw, ".", ""), "-", "")
+	phone := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(phoneRaw, "(", ""), ")", ""), "-", ""), " ", "")
+
+	if cpf == "" || name == "" || phone == "" {
+		renderManageAdminsPage(w, admin, "Preencha todos os campos corretamente.", "")
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	storage.DB.MustExecParams(
+		`INSERT INTO admin (username, name, phone, is_super, enabled, created_at)
+		 VALUES (?, ?, ?, 0, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET name=excluded.name, phone=excluded.phone, enabled=excluded.enabled`,
+		1, 5,
+		[]sqinn.Value{
+			sqinn.StringValue(cpf),
+			sqinn.StringValue(name),
+			sqinn.StringValue(phone),
+			sqinn.Int64Value(storage.BoolToInt(enabledBool)),
+			sqinn.StringValue(now),
+		},
+	)
+
+	renderManageAdminsPage(w, admin, "", "Administrador salvo com sucesso!")
+}
+
+func renderManageAdminsPage(w http.ResponseWriter, currentAdmin *models.Admin, errMsg, successMsg string) {
+	rows, err := storage.DB.QueryRows(`SELECT id, username, COALESCE(name, ''), COALESCE(phone, ''), is_super, enabled FROM admin ORDER BY id DESC`, nil,
+		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValInt64, sqinn.ValInt64})
+
+	var list []models.Admin
+	if err == nil {
+		for _, row := range rows {
+			list = append(list, models.Admin{
+				ID:       row[0].Int64,
+				Username: row[1].String,
+				Name:     row[2].String,
+				Phone:    row[3].String,
+				IsSuper:  row[4].Int64 == 1,
+				Enabled:  row[5].Int64 == 1,
+			})
+		}
+	}
+
+	web.Templates.ExecuteTemplate(w, "manage_admins", web.PageData{
+		AdminUser:  currentAdmin,
+		AdminsList: list,
+		Error:      errMsg,
+		Message:    successMsg,
+	})
+}
