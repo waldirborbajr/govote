@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 			sqinn.StringValue(req.CPF),
 			sqinn.StringValue(req.Name),
 			sqinn.StringValue(req.Phone),
-			sqinn.StringValue(passcode),
+			sqinn.StringValue(security.HashPasscode(passcode)),
 		},
 	)
 
@@ -81,10 +82,10 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storedPasscode := rows[0][0].String
+	storedHash := rows[0][0].String
 	usedAt := rows[0][1].String
 
-	if storedPasscode != req.Passcode {
+	if storedHash == "" || !security.CheckPasscode(storedHash, req.Passcode) {
 		web.RespondError(w, http.StatusUnauthorized, "wrong passcode")
 		return
 	}
@@ -388,7 +389,16 @@ func HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 	totalVotes := rows[0][0].Int64
 
-	const totalEligible = 1000.0
+	// TODO: totalEligible ainda vem de uma variável de ambiente com valor
+	// padrão arbitrário. O ideal é vir de uma fonte real de eleitores
+	// elegíveis (ex.: contagem da tabela voters, ou integração com um
+	// cadastro eleitoral), não de um número fixo — ver TODO #14 do PR.
+	totalEligible := 1000.0
+	if v := os.Getenv("GOVOTE_TOTAL_ELIGIBLE_VOTERS"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed > 0 {
+			totalEligible = parsed
+		}
+	}
 	turnout := (float64(totalVotes) / totalEligible) * 100
 
 	trows, _ := storage.DB.QueryRows(

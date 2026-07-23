@@ -142,7 +142,7 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 			sqinn.StringValue(cpf),
 			sqinn.StringValue(name),
 			sqinn.StringValue(phone),
-			sqinn.StringValue(passcode),
+			sqinn.StringValue(security.HashPasscode(passcode)),
 		},
 	)
 
@@ -173,7 +173,7 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rows[0][0].String != passcode {
+	if rows[0][0].String == "" || !security.CheckPasscode(rows[0][0].String, passcode) {
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "código incorreto"})
 		return
 	}

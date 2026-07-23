@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,10 +20,29 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-var jwtSecret = []byte("super-secret-jwt-key-change-in-production-2026")
-const hashSalt = "super-secret-salt-value"
+// jwtSecret assina os tokens de sessão de admin. DEVE ser definido via a
+// variável de ambiente GOVOTE_JWT_SECRET em qualquer ambiente que não seja
+// desenvolvimento local — o valor de fallback é público (está no código-fonte)
+// e permite forjar tokens de admin.
+var jwtSecret = loadSecret("GOVOTE_JWT_SECRET", "insecure-dev-jwt-secret-change-me")
 
-// Argon2id parameters.
+// cpfPepper é o "salt" fixo (por deployment) usado em HashCPF. DEVE ser
+// definido via GOVOTE_CPF_PEPPER em produção — ver comentário de HashCPF
+// para o porquê de não ser um salt aleatório por registro.
+var cpfPepper = loadSecret("GOVOTE_CPF_PEPPER", "insecure-dev-cpf-pepper-change-me")
+
+// loadSecret lê um segredo de variável de ambiente, ou usa um valor de
+// desenvolvimento (registrando um aviso) caso não esteja definida.
+func loadSecret(envVar, devFallback string) []byte {
+	if v := os.Getenv(envVar); v != "" {
+		return []byte(v)
+	}
+	log.Printf("⚠️  %s não definida — usando valor de desenvolvimento INSEGURO. Configure essa variável antes de ir para produção.", envVar)
+	return []byte(devFallback)
+}
+
+// Argon2id parameters para senhas de admin/voter (operação pouco frequente,
+// pode ser mais custosa).
 const (
 	argonMemory  = 65536 // memory_cost in KiB (64 MB)
 	argonTime    = 7     // time_cost (iterations)
@@ -31,12 +51,44 @@ const (
 	argonSaltLen = 16
 )
 
-// HashCPF returns a deterministic, salted SHA-256 hash of a CPF so that voter
-// identity can be stored without keeping the raw document number.
+// Argon2id parameters para hashing de CPF. HashCPF roda em praticamente toda
+// requisição relevante (votar, verificar, listar resultados por admin), então
+// os custos são calibrados mais baixo que os de senha — ainda assim, no
+// mínimo recomendado pela OWASP (m=19MB, t=2, p=1), o que já é ordens de
+// magnitude mais caro que o SHA-256 de passagem única usado antes.
+const (
+	cpfArgonMemory  = 19 * 1024 // 19 MB
+	cpfArgonTime    = 2
+	cpfArgonThreads = 1
+	cpfArgonKeyLen  = 32
+)
+
+// HashCPF retorna um hash Argon2id determinístico do CPF, usado como chave
+// de busca/unicidade (voter_hash) na tabela votes.
+//
+// Diferente de HashPassword, este hash NÃO usa salt aleatório por registro:
+// o sistema precisa reencontrar o mesmo voter_hash a partir do mesmo CPF
+// (checagem de "já votou" via UNIQUE(poll_id, voter_hash) e WHERE cpf = ?),
+// então a função tem que ser pura em relação à entrada. Em vez de salt
+// aleatório, usamos um pepper fixo por deployment (cpfPepper) como salt do
+// Argon2id.
+//
+// Isso não torna o CPF "impossível" de recuperar (CPF só tem ~10^11 valores
+// possíveis, então um espaço de busca pequeno e estruturado sempre é
+// atacável por força bruta se o pepper vazar junto com o banco). O ganho
+// real é que cada tentativa agora custa uma execução completa de Argon2id
+// (memory-hard) em vez de um único SHA-256 — isso torna a varredura de todo
+// o espaço de CPFs várias ordens de magnitude mais lenta. cpfPepper precisa
+// ser tratado com o mesmo cuidado que uma chave de banco de dados: se vazar
+// junto com os dados, essa proteção deixa de valer.
 func HashCPF(cpf string) string {
-	h := sha256.New()
-	h.Write([]byte(cpf + hashSalt))
-	return hex.EncodeToString(h.Sum(nil))
+	// Argon2id exige um salt; derivamos um de 16 bytes fixo a partir do
+	// pepper para manter o hash determinístico entre chamadas/reinícios.
+	saltSum := sha256.Sum256(cpfPepper)
+	salt := saltSum[:16]
+
+	hash := argon2.IDKey([]byte(cpf), salt, cpfArgonTime, cpfArgonMemory, cpfArgonThreads, cpfArgonKeyLen)
+	return hex.EncodeToString(hash)
 }
 
 // HashPassword returns an Argon2id hash of password, encoded in the standard
@@ -144,4 +196,44 @@ func GeneratePasscode() string {
 	}
 	val := (int(b[0])<<8 | int(b[1])) % 10000
 	return fmt.Sprintf("%04d", val)
+}
+
+// Argon2id parameters para passcodes (OTP). Diferente de HashCPF, o passcode
+// é comparado 1:1 (não é usado como chave de busca), então usa salt aleatório
+// por registro como uma senha normal. Os parâmetros são mais leves que
+// argonMemory/argonTime porque HashPasscode roda no caminho crítico de todo
+// pedido/verificação de OTP (voter e admin), mas ainda assim são muito mais
+// caros que a comparação em texto puro que existia antes.
+const (
+	passcodeArgonMemory  = 8 * 1024 // 8 MB
+	passcodeArgonTime    = 1
+	passcodeArgonThreads = 1
+)
+
+// HashPasscode hashes a short numeric OTP passcode using Argon2id, encoded in
+// the same PHC format as HashPassword, so it never needs to be stored or
+// compared in plain text.
+func HashPasscode(passcode string) string {
+	salt := make([]byte, argonSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		log.Fatalf("rand failed: %v", err)
+	}
+
+	hash := argon2.IDKey([]byte(passcode), salt, passcodeArgonTime, passcodeArgonMemory, passcodeArgonThreads, argonKeyLen)
+
+	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
+	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
+
+	return fmt.Sprintf(
+		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, passcodeArgonMemory, passcodeArgonTime, passcodeArgonThreads, b64Salt, b64Hash,
+	)
+}
+
+// CheckPasscode reports whether passcode matches a hash produced by
+// HashPasscode. It delegates to CheckPassword: that routine reads its
+// Argon2id parameters from the stored hash itself, so it verifies any
+// PHC-format hash regardless of which Hash* function created it.
+func CheckPasscode(storedHash, passcode string) bool {
+	return CheckPassword(storedHash, passcode)
 }

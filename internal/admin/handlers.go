@@ -50,7 +50,7 @@ func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 
 	storage.DB.MustExecParams(`UPDATE admin SET passcode = ? WHERE id = ?`, 1, 2,
 		[]sqinn.Value{
-			sqinn.StringValue(passcode),
+			sqinn.StringValue(security.HashPasscode(passcode)),
 			sqinn.Int64Value(rows[0][0].Int64),
 		})
 
@@ -109,7 +109,7 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		storedOTP := rows[0][5].String
-		if storedOTP == "" || storedOTP != password {
+		if storedOTP == "" || !security.CheckPasscode(storedOTP, password) {
 			web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Token dinâmico inválido ou expirado."})
 			return
 		}
