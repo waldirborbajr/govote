@@ -197,3 +197,43 @@ func GeneratePasscode() string {
 	val := (int(b[0])<<8 | int(b[1])) % 10000
 	return fmt.Sprintf("%04d", val)
 }
+
+// Argon2id parameters para passcodes (OTP). Diferente de HashCPF, o passcode
+// é comparado 1:1 (não é usado como chave de busca), então usa salt aleatório
+// por registro como uma senha normal. Os parâmetros são mais leves que
+// argonMemory/argonTime porque HashPasscode roda no caminho crítico de todo
+// pedido/verificação de OTP (voter e admin), mas ainda assim são muito mais
+// caros que a comparação em texto puro que existia antes.
+const (
+	passcodeArgonMemory  = 8 * 1024 // 8 MB
+	passcodeArgonTime    = 1
+	passcodeArgonThreads = 1
+)
+
+// HashPasscode hashes a short numeric OTP passcode using Argon2id, encoded in
+// the same PHC format as HashPassword, so it never needs to be stored or
+// compared in plain text.
+func HashPasscode(passcode string) string {
+	salt := make([]byte, argonSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		log.Fatalf("rand failed: %v", err)
+	}
+
+	hash := argon2.IDKey([]byte(passcode), salt, passcodeArgonTime, passcodeArgonMemory, passcodeArgonThreads, argonKeyLen)
+
+	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
+	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
+
+	return fmt.Sprintf(
+		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, passcodeArgonMemory, passcodeArgonTime, passcodeArgonThreads, b64Salt, b64Hash,
+	)
+}
+
+// CheckPasscode reports whether passcode matches a hash produced by
+// HashPasscode. It delegates to CheckPassword: that routine reads its
+// Argon2id parameters from the stored hash itself, so it verifies any
+// PHC-format hash regardless of which Hash* function created it.
+func CheckPasscode(storedHash, passcode string) bool {
+	return CheckPassword(storedHash, passcode)
+}

@@ -45,7 +45,7 @@ func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 			sqinn.StringValue(req.CPF),
 			sqinn.StringValue(req.Name),
 			sqinn.StringValue(req.Phone),
-			sqinn.StringValue(passcode),
+			sqinn.StringValue(security.HashPasscode(passcode)),
 		},
 	)
 
@@ -81,10 +81,10 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storedPasscode := rows[0][0].String
+	storedHash := rows[0][0].String
 	usedAt := rows[0][1].String
 
-	if storedPasscode != req.Passcode {
+	if storedHash == "" || !security.CheckPasscode(storedHash, req.Passcode) {
 		web.RespondError(w, http.StatusUnauthorized, "wrong passcode")
 		return
 	}
