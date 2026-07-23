@@ -18,3 +18,7 @@ services:
       # `openssl rand -hex 32`, e nunca reutilize os defaults de dev.
       - GOVOTE_JWT_SECRET=changeme-generate-a-long-random-value
       - GOVOTE_CPF_PEPPER=changeme-generate-a-long-random-value
+      # Só defina como "true" se houver um proxy reverso confiável na frente
+      # (nginx, Cloudflare etc.) que sobrescreve X-Forwarded-For/X-Real-IP.
+      # Caso contrário, o rate limiter pode ser burlado forjando esses headers.
+      - GOVOTE_TRUST_PROXY_HEADERS=false

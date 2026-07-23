@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -44,14 +45,32 @@ func isRateLimited(ip string) bool {
 	return false
 }
 
+// trustProxyHeaders controla se X-Forwarded-For/X-Real-IP são usados para
+// identificar o IP do cliente. Esses headers podem ser forjados por qualquer
+// requisição direta, então só devem ser confiados quando a aplicação roda
+// atrás de um proxy reverso confiável (nginx, Cloudflare etc.) que os
+// sobrescreve. Sem isso, o rate limiter pode ser burlado trivialmente
+// enviando um X-Forwarded-For diferente a cada requisição.
+var trustProxyHeaders = os.Getenv("GOVOTE_TRUST_PROXY_HEADERS") == "true"
+
 func getClientIP(r *http.Request) string {
-	ip := r.Header.Get("X-Forwarded-For")
-	if ip == "" {
-		ip = r.Header.Get("X-Real-IP")
+	if trustProxyHeaders {
+		if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+			// X-Forwarded-For pode ser uma lista "client, proxy1, proxy2";
+			// o primeiro IP é o do cliente original.
+			if idx := strings.Index(ip, ","); idx != -1 {
+				ip = ip[:idx]
+			}
+			return strings.TrimSpace(stripPort(ip))
+		}
+		if ip := r.Header.Get("X-Real-IP"); ip != "" {
+			return stripPort(ip)
+		}
 	}
-	if ip == "" {
-		ip = r.RemoteAddr
-	}
+	return stripPort(r.RemoteAddr)
+}
+
+func stripPort(ip string) string {
 	if idx := strings.LastIndex(ip, ":"); idx != -1 {
 		ip = ip[:idx]
 	}
