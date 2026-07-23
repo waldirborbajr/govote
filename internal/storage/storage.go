@@ -3,6 +3,8 @@
 package storage
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"time"
 
@@ -109,7 +111,16 @@ func InitDB() error {
 	// Criar Admin
 	rows, _ := DB.QueryRows("SELECT id FROM admin WHERE username = 'admin'", []sqinn.Value{}, []byte{sqinn.ValInt64})
 	if len(rows) == 0 {
-		defaultHash := security.HashPassword("123Mudar")
+		// Senha inicial aleatória em vez de um valor fixo conhecido
+		// publicamente (o antigo "123Mudar" estava hardcoded no código-fonte
+		// deste repositório, então qualquer instância nova ficava vulnerável
+		// até alguém logar e trocá-la). needs_change=1 continua forçando a
+		// troca no primeiro login, mas agora a senha inicial não é previsível.
+		initialPassword, err := generateRandomPassword()
+		if err != nil {
+			log.Fatalf("falha ao gerar senha inicial do admin: %v", err)
+		}
+		defaultHash := security.HashPassword(initialPassword)
 		now := time.Now().UTC().Format(time.RFC3339)
 		DB.MustExecParams(
 			`INSERT INTO admin (username, password_hash, is_super, needs_change, created_at) VALUES (?, ?, 1, 1, ?)`,
@@ -121,6 +132,7 @@ func InitDB() error {
 			},
 		)
 		log.Println("✅ Admin padrão criado.")
+		log.Printf("🔑 Senha inicial do admin (só exibida agora, troque no primeiro login): %s", initialPassword)
 	}
 
 	// Inserir Enquete de Teste
@@ -161,4 +173,14 @@ func InitDB() error {
 	}
 
 	return nil
+}
+
+// generateRandomPassword returns a random 16-character hex string suitable as
+// a one-time initial password (paired with needs_change=1 to force a reset).
+func generateRandomPassword() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
