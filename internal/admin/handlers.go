@@ -1,3 +1,4 @@
+// admin/handlers.go
 // Package admin implements the administrator authentication workflows (OTP
 // login, password change) and super-admin management of other admins.
 package admin

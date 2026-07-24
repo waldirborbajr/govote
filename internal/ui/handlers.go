@@ -1,3 +1,4 @@
+// handlers.go
 // Package ui implements the server-rendered HTMX handlers for the voter flow
 // and the administrator dashboard.
 package ui

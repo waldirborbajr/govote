@@ -1,3 +1,4 @@
+// api/handlers.go
 // Package api implements the JSON HTTP handlers for the public voting API and
 // the admin statistics endpoint.
 package api
