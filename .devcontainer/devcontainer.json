@@ -2,6 +2,12 @@
   "name": "Go Mega Power",
   "image": "mcr.microsoft.com/devcontainers/go:1-1.23",
   
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.26"
+    }
+  },
+
   "customizations": {
     "vscode": {
       "extensions": [
