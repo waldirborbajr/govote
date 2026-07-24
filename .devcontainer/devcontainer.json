@@ -1,19 +1,19 @@
 {
   "name": "Go Mega Power",
 
-  "image": "mcr.microsoft.com/devcontainers/go:1-1.26",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
 
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-      "version": "latest"
-    }
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.26"
+    },
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
   },
 
   "customizations": {
     "vscode": {
       "extensions": [
         "golang.go",
-        "golang.go-nightly",
         "ms-vscode.hexeditor",
         "eamodio.gitlens",
         "usernamehw.errorlens",
@@ -24,19 +24,16 @@
         "humao.rest-client",
         "ms-azuretools.vscode-docker"
       ],
-
       "settings": {
         "go.useLanguageServer": true,
+        "go.toolsManagement.checkForUpdates": "local",
         "go.formatTool": "gofumpt",
         "go.lintTool": "golangci-lint",
-
-        "go.toolsManagement.checkForUpdates": "local",
 
         "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
           "source.organizeImports": "explicit"
         },
-
         "editor.inlayHints.enabled": "on",
 
         "files.insertFinalNewline": true,
@@ -46,42 +43,36 @@
     }
   },
 
-
   "postCreateCommand": "bash .devcontainer/install-tools.sh",
 
-
-  "postStartCommand": "echo '🚀 Go Mega Power Environment Ready' && go version && golangci-lint --version && air --version",
-
+  "postStartCommand": "go version && golangci-lint --version && air --version",
 
   "containerEnv": {
+    "CGO_ENABLED": "1",
     "GO111MODULE": "on",
     "GOPROXY": "https://proxy.golang.org,direct",
     "GOSUMDB": "sum.golang.org",
-    "CGO_ENABLED": "1"
+    "GOTOOLCHAIN": "auto"
   },
-
 
   "remoteUser": "vscode",
 
   "updateRemoteUserUID": true,
 
-
   "mounts": [
     "source=${localEnv:HOME}/go/pkg/mod,target=/go/pkg/mod,type=bind,consistency=cached"
   ],
 
-
   "forwardPorts": [
     8080,
     3000,
-    5000,
-    6379
+    5000
   ],
-
 
   "portsAttributes": {
     "8080": {
-      "label": "Go API"
+      "label": "Go API",
+      "onAutoForward": "notify"
     },
     "3000": {
       "label": "Frontend"
