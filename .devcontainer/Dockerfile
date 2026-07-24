@@ -2,81 +2,90 @@
 # Stage 1 - Build Go development tools
 ###############################################################################
 
-ARG GO_VERSION=1.26.0
-
-FROM golang:${GO_VERSION}-bookworm AS tools
-
-ARG GOLANGCI_LINT_VERSION=v2.5.0
-ARG GOFUMPT_VERSION=v0.9.2
-ARG GOIMPORTS_VERSION=v0.38.0
-ARG GOPLS_VERSION=v0.21.0
-ARG STATICCHECK_VERSION=2025.1.1
-ARG GOVULNCHECK_VERSION=v1.1.4
-ARG DLV_VERSION=v1.25.2
-ARG AIR_VERSION=v1.63.0
-ARG GOTESTSUM_VERSION=v1.13.0
-ARG RICHGO_VERSION=v0.3.13
+FROM golang:1.26.0-bookworm AS tools
 
 ENV GOBIN=/opt/go-tools/bin
 
 RUN mkdir -p ${GOBIN}
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go install golang.org/x/tools/gopls@${GOPLS_VERSION} && \
-    go install golang.org/x/tools/cmd/goimports@${GOIMPORTS_VERSION} && \
-    go install mvdan.cc/gofumpt@${GOFUMPT_VERSION} && \
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} && \
-    go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION} && \
-    go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} && \
-    go install github.com/go-delve/delve/cmd/dlv@${DLV_VERSION} && \
-    go install github.com/air-verse/air@${AIR_VERSION} && \
-    go install gotest.tools/gotestsum@${GOTESTSUM_VERSION} && \
-    go install github.com/kyoh86/richgo@${RICHGO_VERSION}
+    --mount=type=cache,target=/root/.cache/go-build <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+TOOLS=(
+    "golang.org/x/tools/gopls@latest"
+    "golang.org/x/tools/cmd/goimports@latest"
+    "mvdan.cc/gofumpt@latest"
+    "github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+    "honnef.co/go/tools/cmd/staticcheck@latest"
+    "golang.org/x/vuln/cmd/govulncheck@latest"
+    "github.com/go-delve/delve/cmd/dlv@latest"
+    "github.com/air-verse/air@latest"
+    "gotest.tools/gotestsum@latest"
+    "github.com/kyoh86/richgo@latest"
+)
+
+for tool in "${TOOLS[@]}"; do
+    echo
+    echo "============================================================"
+    echo "Installing ${tool}"
+    echo "============================================================"
+
+    go install "${tool}"
+done
+
+echo
+echo "Go tools installation completed."
+EOF
+
 
 ###############################################################################
-# Stage 2 - DevContainer
+# Stage 2 - Development container
 ###############################################################################
 
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
-ARG GO_VERSION=1.26.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        gcc \
-        g++ \
-        make \
-        curl \
-        wget \
-        unzip \
-        ca-certificates \
-        gnupg \
-        lsb-release \
-        sqlite3 \
-        libsqlite3-dev \
-        ripgrep \
-        fd-find \
-        bat \
-        git \
-        git-delta \
-        hyperfine \
-        jq \
-        tree \
-        htop \
-        lsof && \
-    rm -rf /var/lib/apt/lists/*
+
+###############################################################################
+# System packages
+###############################################################################
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    make \
+    curl \
+    wget \
+    unzip \
+    ca-certificates \
+    gnupg \
+    sqlite3 \
+    libsqlite3-dev \
+    ripgrep \
+    fd-find \
+    bat \
+    git \
+    git-delta \
+    hyperfine \
+    jq \
+    tree \
+    htop \
+    lsof \
+    && rm -rf /var/lib/apt/lists/*
+
 
 ###############################################################################
 # GitHub CLI
 ###############################################################################
 
-RUN mkdir -p -m 755 /etc/apt/keyrings && \
+RUN mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null && \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list && \
@@ -84,27 +93,34 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
     apt-get install -y gh && \
     rm -rf /var/lib/apt/lists/*
 
+
 ###############################################################################
-# just
+# just command runner
 ###############################################################################
 
-RUN wget -qO- https://github.com/casey/just/releases/download/1.43.0/just-1.43.0-x86_64-unknown-linux-musl.tar.gz \
-    | tar -xz -C /usr/local/bin just
+RUN curl --proto '=https' --tlsv1.2 -sSf \
+    https://just.systems/install.sh \
+    | bash -s -- --to /usr/local/bin
+
 
 ###############################################################################
 # Go SDK
 ###############################################################################
+
+ARG GO_VERSION=1.26.0
 
 RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz && \
     rm -rf /usr/local/go && \
     tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz && \
     rm go${GO_VERSION}.linux-amd64.tar.gz
 
+
 ###############################################################################
-# Go tools
+# Copy Go tools
 ###############################################################################
 
 COPY --from=tools /opt/go-tools/bin/ /usr/local/bin/
+
 
 ###############################################################################
 # Environment
@@ -117,8 +133,9 @@ ENV GO111MODULE=on \
     GOPROXY=https://proxy.golang.org,direct \
     GOSUMDB=sum.golang.org
 
+
 ###############################################################################
-# Shell
+# Shell helpers
 ###############################################################################
 
 RUN cat >> /etc/bash.bashrc <<'EOF'
@@ -131,33 +148,41 @@ alias air='air'
 
 EOF
 
+
+###############################################################################
+# Workspace
+###############################################################################
+
 USER vscode
 
 WORKDIR /workspaces
 
+
 ###############################################################################
-# Smoke Test
+# Validation
 ###############################################################################
 
 RUN go version && \
+    git --version && \
+    gh --version && \
+    just --version && \
     gopls version && \
-    goimports -h >/dev/null && \
     gofumpt -version && \
     golangci-lint version && \
     staticcheck -debug.version && \
     govulncheck -version && \
-    dlv version && \
-    air -v && \
-    gotestsum --version && \
-    richgo -h >/dev/null && \
-    gh --version && \
-    just --version
+    dlv version
+
 
 ###############################################################################
-# Healthcheck
+# Container health
 ###############################################################################
 
-HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
-CMD go version >/dev/null 2>&1 && \
-    gopls version >/dev/null 2>&1 && \
-    golangci-lint version >/dev/null 2>&1 || exit 1
+HEALTHCHECK \
+    --interval=5m \
+    --timeout=10s \
+    --start-period=30s \
+    --retries=3 \
+    CMD go version >/dev/null 2>&1 && \
+        gopls version >/dev/null 2>&1 && \
+        golangci-lint version >/dev/null 2>&1 || exit 1
