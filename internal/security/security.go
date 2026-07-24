@@ -187,7 +187,27 @@ func ValidateJWT(token string) (string, bool) {
 	return username, true
 }
 
-// GeneratePasscode returns a random 4-digit passcode.
+// GenerateTemporaryPassword generates a strong temporary password:
+// 8 random digits + 1 special character (for first-use admin access).
+func GenerateTemporaryPassword() string {
+	// 8 digits
+	digits := make([]byte, 8)
+	_, err := rand.Read(digits)
+	if err != nil {
+		log.Fatalf("rand failed: %v", err)
+	}
+	for i := range digits {
+		digits[i] = byte('0' + (digits[i] % 10))
+	}
+
+	// One special char
+	specials := []byte{'!', '@', '#', '$', '%', '&', '*', '?'}
+	special := specials[int(digits[0])%len(specials)]
+
+	return string(digits) + string(special)
+}
+
+// GeneratePasscode keeps the old 4-digit for voters (backward compatibility).
 func GeneratePasscode() string {
 	b := make([]byte, 2)
 	_, err := rand.Read(b)
