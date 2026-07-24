@@ -34,7 +34,7 @@
     }
   },
 
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y zsh ripgrep fd-find bat git-delta hyperfine make gcc g++ curl && sh -c \"$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended && go install github.com/air-verse/air@latest && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && go install mvdan.cc/gofumpt@latest && go install honnef.co/go/tools/cmd/staticcheck@latest && go install github.com/go-delve/delve/cmd/dlv@latest && go install github.com/kyoh86/richgo@latest && echo '🚀 Go Mega Power Environment loaded!' && echo 'export PATH=$PATH:/go/bin' >> ~/.zshrc",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y zsh ripgrep fd-find bat git-delta hyperfine make gcc g++ curl gh && sh -c \"$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended && go install github.com/air-verse/air@latest && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && go install mvdan.cc/gofumpt@latest && go install honnef.co/go/tools/cmd/staticcheck@latest && go install github.com/go-delve/delve/cmd/dlv@latest && go install github.com/kyoh86/richgo@latest && echo '🚀 Go Mega Power Environment loaded!' && echo 'export PATH=$PATH:/go/bin' >> ~/.zshrc",
 
   "postStartCommand": "go version && golangci-lint --version && air --version",
 
