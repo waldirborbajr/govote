@@ -50,6 +50,8 @@ func Router(w http.ResponseWriter, r *http.Request) {
 		web.RateLimitMiddleware(ui.HandleUIVerify)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/request-otp":
 		web.RateLimitMiddleware(admin.HandleUIRequestAdminOTP)(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/request-temp-password":
+		web.RateLimitMiddleware(admin.HandleUIRequestAdminTemporaryPassword)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/login":
 		web.RateLimitMiddleware(admin.HandleAdminLoginPost)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/change-password":

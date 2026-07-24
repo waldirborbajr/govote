@@ -17,8 +17,8 @@ import (
 	"github.com/waldirborbajr/govote/internal/web"
 )
 
-// HandleUIRequestAdminOTP agora suporta Master Admin + Normais via telefone
-func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
+// HandleUIRequestAdminTemporaryPassword handles the new "Solicitar Senha" feature.
+func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
 
@@ -26,11 +26,11 @@ func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 	phone := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(phoneRaw, "(", ""), ")", ""), "-", ""), " ", "")
 
 	if phone == "" {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Telefone é obrigatório para solicitar senha."})
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Telefone é obrigatório."})
 		return
 	}
 
-	// Busca por telefone (funciona para admin master e admins normais)
+	// Busca por telefone
 	rows, err := storage.DB.QueryRows(`SELECT id, username, enabled FROM admin WHERE phone = ?`,
 		[]sqinn.Value{sqinn.StringValue(phone)},
 		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValInt64},
@@ -46,21 +46,28 @@ func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := rows[0][1].String
-	passcode := security.GeneratePasscode()
+	tempPass := security.GenerateTemporaryPassword()
 
-	storage.DB.MustExecParams(`UPDATE admin SET passcode = ? WHERE id = ?`, 1, 2,
+	// Store hashed temp password and mark for change
+	storage.DB.MustExecParams(`UPDATE admin SET passcode = ?, needs_change = 1 WHERE id = ?`, 1, 2,
 		[]sqinn.Value{
-			sqinn.StringValue(security.HashPasscode(passcode)),
+			sqinn.StringValue(security.HashPasscode(tempPass)),
 			sqinn.Int64Value(rows[0][0].Int64),
 		})
 
-	whatsappURL := notify.BuildWhatsAppURL(phone, passcode)
-	fmt.Printf("[PoC WhatsApp Admin OTP] User: %s | Phone: %s | Passcode: %s\n", username, phone, passcode)
+	whatsappURL := notify.BuildWhatsAppURL(phone, tempPass)
+	fmt.Printf("[Admin Temp Password] User: %s | Phone: %s | TempPass: %s\n", username, phone, tempPass)
 
 	web.Templates.ExecuteTemplate(w, "admin_passcode_sent", web.PageData{WhatsAppURL: whatsappURL})
 }
 
-// HandleAdminLoginPost autentica via OTP (agora para Master e Normais)
+// HandleUIRequestAdminOTP (legacy for 4-digit, kept for compatibility)
+func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
+	// ... (existing code, can call new func or keep as is)
+	HandleUIRequestAdminTemporaryPassword(w, r) // reuse for now
+}
+
+// HandleAdminLoginPost - enhanced to handle needs_change
 func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -82,18 +89,17 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rows[0][4].Int64 == 0 {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso administrativo revogado (Disabled)."})
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso administrativo revogado."})
 		return
 	}
 
-	// OTP para Master e Normais
 	storedOTP := rows[0][5].String
 	if storedOTP == "" || !security.CheckPasscode(storedOTP, password) {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."})
 		return
 	}
 
-	// Limpa o passcode após uso
+	// Limpa o passcode
 	storage.DB.MustExecParams(`UPDATE admin SET passcode = NULL WHERE id = ?`, 1, 1, []sqinn.Value{sqinn.Int64Value(rows[0][0].Int64)})
 
 	token := security.GenerateJWT(username)
@@ -107,15 +113,22 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	})
 
 	adminObj := &models.Admin{
-		ID:       rows[0][0].Int64,
-		Username: username,
-		IsSuper:  rows[0][3].Int64 == 1,
-		Enabled:  true,
+		ID:         rows[0][0].Int64,
+		Username:   username,
+		IsSuper:    rows[0][3].Int64 == 1,
+		Enabled:    true,
+		NeedsChange: rows[0][2].Int64 == 1,
 	}
+
+	if adminObj.NeedsChange {
+		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{AdminUser: adminObj})
+		return
+	}
+
 	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
 }
 
-// HandleAdminChangePassword (mantido para casos de troca de senha)
+// HandleAdminChangePassword updated to support any admin
 func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	newPass := r.FormValue("new_password")
@@ -125,18 +138,24 @@ func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	username := r.FormValue("username") // if passed, or from session
+	if username == "" {
+		username = "admin"
+	}
+
 	storage.DB.MustExecParams(`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = ?`,
 		1, 2,
 		[]sqinn.Value{
 			sqinn.StringValue(security.HashPassword(newPass)),
-			sqinn.StringValue("admin"),
+			sqinn.StringValue(username),
 		})
 
-	adminObj := &models.Admin{ID: 1, Username: "admin", IsSuper: true, Enabled: true}
+	adminObj := &models.Admin{Username: username, IsSuper: true, Enabled: true}
 	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
 }
 
-// HandleUIManageAdmins renders the super-admin management page.
+// ... rest of the file remains the same (Manage Admins etc.)
+// HandleUIManageAdmins and others unchanged
 func HandleUIManageAdmins(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
@@ -147,7 +166,6 @@ func HandleUIManageAdmins(w http.ResponseWriter, r *http.Request) {
 	renderManageAdminsPage(w, admin, "", "")
 }
 
-// HandleUIManageAdminsPost creates or updates an admin from the management form.
 func HandleUIManageAdminsPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
