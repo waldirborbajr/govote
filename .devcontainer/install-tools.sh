@@ -2,20 +2,9 @@
 
 set -euo pipefail
 
-echo "==> Updating packages..."
-
 sudo apt-get update
 
 sudo apt-get install -y \
-    zsh \
-    curl \
-    wget \
-    git \
-    make \
-    gcc \
-    g++ \
-    sqlite3 \
-    libsqlite3-dev \
     ripgrep \
     fd-find \
     bat \
@@ -24,57 +13,47 @@ sudo apt-get install -y \
     jq \
     tree \
     htop \
-    lsof \
-    unzip
+    lsof
 
-if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    echo "==> Installing Oh My Zsh..."
+if [ ! -d ~/.oh-my-zsh ]; then
     RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 fi
 
-mkdir -p "$HOME/go/bin"
+TOOLS=(
+    "golang.org/x/tools/gopls@latest"
+    "golang.org/x/tools/cmd/goimports@latest"
+    "mvdan.cc/gofumpt@latest"
+    "github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+    "honnef.co/go/tools/cmd/staticcheck@latest"
+    "golang.org/x/vuln/cmd/govulncheck@latest"
+    "github.com/go-delve/delve/cmd/dlv@latest"
+    "github.com/air-verse/air@latest"
+    "gotest.tools/gotestsum@latest"
+    "github.com/kyoh86/richgo@latest"
+)
 
-echo "==> Installing Go tools..."
+for tool in "${TOOLS[@]}"; do
+    go install "$tool"
+done
 
-go install golang.org/x/tools/gopls@latest
+if ! grep -q 'go/bin' ~/.zshrc; then
+cat <<EOF >> ~/.zshrc
 
-go install mvdan.cc/gofumpt@latest
-
-go install golang.org/x/tools/cmd/goimports@latest
-
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-go install honnef.co/go/tools/cmd/staticcheck@latest
-
-go install golang.org/x/vuln/cmd/govulncheck@latest
-
-go install github.com/go-delve/delve/cmd/dlv@latest
-
-go install github.com/air-verse/air@latest
-
-go install gotest.tools/gotestsum@latest
-
-go install github.com/kyoh86/richgo@latest
-
-if ! grep -q 'HOME/go/bin' ~/.zshrc; then
-cat <<'EOF' >> ~/.zshrc
-
-export PATH="$HOME/go/bin:$PATH"
+export PATH="\$HOME/go/bin:\$PATH"
 
 alias ll="ls -lah"
-alias gst="git status"
-alias got="gotestsum --format testname"
 alias lint="golangci-lint run"
 alias fmt="gofumpt -w ."
-alias imports="goimports -w ."
+alias test="gotestsum"
+alias air="air"
 
 EOF
 fi
 
-echo
-echo "========================================"
-echo "Go Mega Power Environment Ready 🚀"
-echo "========================================"
-
 go version
+
+golangci-lint --version
+
+echo
+echo "✅ Go Mega Power ready"
