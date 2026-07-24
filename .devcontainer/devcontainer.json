@@ -1,81 +1,61 @@
 {
-  "name": "Go Mega Power",
+    "name": "Go Mega Power",
 
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-
-  "features": {
-    "ghcr.io/devcontainers/features/go:1": {
-      "version": "1.26"
+    "build": {
+        "dockerfile": "Dockerfile"
     },
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
-  },
 
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "golang.go",
-        "ms-vscode.hexeditor",
-        "eamodio.gitlens",
-        "usernamehw.errorlens",
-        "tamasfe.even-better-toml",
-        "fill-labs.dependi",
-        "redhat.vscode-yaml",
-        "streetsidesoftware.code-spell-checker",
-        "humao.rest-client",
-        "ms-azuretools.vscode-docker"
-      ],
-      "settings": {
-        "go.useLanguageServer": true,
-        "go.toolsManagement.checkForUpdates": "local",
-        "go.formatTool": "gofumpt",
-        "go.lintTool": "golangci-lint",
+    "remoteUser": "vscode",
 
-        "editor.formatOnSave": true,
-        "editor.codeActionsOnSave": {
-          "source.organizeImports": "explicit"
-        },
-        "editor.inlayHints.enabled": "on",
+    "updateRemoteUserUID": true,
 
-        "files.insertFinalNewline": true,
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "golang.go",
+                "eamodio.gitlens",
+                "usernamehw.errorlens",
+                "fill-labs.dependi",
+                "redhat.vscode-yaml",
+                "tamasfe.even-better-toml",
+                "ms-vscode.hexeditor",
+                "streetsidesoftware.code-spell-checker",
+                "ms-azuretools.vscode-docker",
+                "humao.rest-client"
+            ],
+            "settings": {
+                "editor.formatOnSave": true,
+                "editor.codeActionsOnSave": {
+                    "source.organizeImports": "explicit"
+                },
 
-        "terminal.integrated.defaultProfile.linux": "zsh"
-      }
-    }
-  },
+                "editor.inlayHints.enabled": "on",
 
-  "postCreateCommand": "bash .devcontainer/install-tools.sh",
+                "go.useLanguageServer": true,
+                "go.formatTool": "gofumpt",
+                "go.lintTool": "golangci-lint",
 
-  "postStartCommand": "go version && golangci-lint --version && air --version",
+                "files.insertFinalNewline": true,
 
-  "containerEnv": {
-    "CGO_ENABLED": "1",
-    "GO111MODULE": "on",
-    "GOPROXY": "https://proxy.golang.org,direct",
-    "GOSUMDB": "sum.golang.org",
-    "GOTOOLCHAIN": "auto"
-  },
-
-  "remoteUser": "vscode",
-
-  "updateRemoteUserUID": true,
-
-  "mounts": [
-    "source=${localEnv:HOME}/go/pkg/mod,target=/go/pkg/mod,type=bind,consistency=cached"
-  ],
-
-  "forwardPorts": [
-    8080,
-    3000,
-    5000
-  ],
-
-  "portsAttributes": {
-    "8080": {
-      "label": "Go API",
-      "onAutoForward": "notify"
+                "terminal.integrated.defaultProfile.linux": "zsh"
+            }
+        }
     },
-    "3000": {
-      "label": "Frontend"
-    }
-  }
+
+    "containerEnv": {
+        "GO111MODULE": "on",
+        "CGO_ENABLED": "1",
+        "GOPROXY": "https://proxy.golang.org,direct",
+        "GOSUMDB": "sum.golang.org"
+    },
+
+    "postCreateCommand": "bash .devcontainer/install-tools.sh",
+
+    "postStartCommand": "go version",
+
+    "forwardPorts": [
+        8080,
+        3000,
+        5000
+    ]
 }
