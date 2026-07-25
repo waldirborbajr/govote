@@ -1,0 +1,13 @@
+.git
+.gitignore
+*.md
+README.md
+LICENSE
+data/
+votes.db
+cert.pem
+key.pem
+docker-compose.yaml
+Dockerfile
+.dockerignore
+*.patch
