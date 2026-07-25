@@ -1,20 +1,31 @@
-
 // storage.go
+//
+// This package uses only database/sql with the pure-Go modernc.org/sqlite
+// driver (no CGO, no external sqinn process). Every query in the codebase
+// must go through storage.DB using the standard database/sql API
+// (DB.Query / DB.QueryRow / DB.Exec), never the sqinn-go API.
 package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
 
+// DB is the shared database handle. It is nil until MustOpen has been called.
 var DB *sql.DB
 
-func Init() {
+// MustOpen opens (or creates) the SQLite database at path using the pure-Go
+// modernc.org/sqlite driver, verifies the connection with Ping, stores the
+// handle in DB and returns it. It exits the process via log.Fatalf if the
+// database cannot be opened or reached.
+func MustOpen(path string) *sql.DB {
 	var err error
 
-	DB, err = sql.Open("sqlite", "govote.db")
+	DB, err = sql.Open("sqlite", path)
 	if err != nil {
 		log.Fatalf("failed opening database: %v", err)
 	}
@@ -23,12 +34,38 @@ func Init() {
 		log.Fatalf("failed connecting database: %v", err)
 	}
 
-	createTables()
+	log.Printf("SQLite database opened at %s", path)
 
-	log.Println("SQLite database initialized")
+	return DB
 }
 
-func createTables() {
+// InitDB creates the schema (tables) if they don't exist yet. MustOpen must
+// be called first so DB is set.
+func InitDB() error {
+	if DB == nil {
+		return fmt.Errorf("storage: InitDB called before MustOpen")
+	}
+	return createTables()
+}
+
+// BoolToInt converts a bool to the 0/1 representation used for SQLite
+// INTEGER columns that store booleans (allow_blank, is_super, enabled, ...).
+func BoolToInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// LogAction writes a lightweight audit-trail entry to the standard logger.
+// This is a PoC-level audit log (stdout/stderr), not a persisted table; swap
+// this out for a real audit_log table + INSERT if/when durability across
+// restarts is required.
+func LogAction(action, detail string) {
+	log.Printf("[AUDIT] %s | action=%s | %s", time.Now().UTC().Format(time.RFC3339), action, detail)
+}
+
+func createTables() error {
 
 	schema := `
 
@@ -83,8 +120,11 @@ CREATE TABLE IF NOT EXISTS votes (
 
 `
 
-	_, err := DB.Exec(schema)
-	if err != nil {
-		log.Fatalf("database migration error: %v", err)
+	if _, err := DB.Exec(schema); err != nil {
+		return fmt.Errorf("database migration error: %w", err)
 	}
+
+	log.Println("SQLite schema ready")
+
+	return nil
 }

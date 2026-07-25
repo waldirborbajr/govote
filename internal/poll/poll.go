@@ -53,7 +53,6 @@ func CanAccessPoll(adminID int64, isSuper bool, pollID int64) bool {
 	return err == nil
 }
 
-
 // GetPollStats returns aggregate statistics for a poll.
 func GetPollStats(
 	pollID int64,
@@ -68,7 +67,6 @@ func GetPollStats(
 			return nil, fmt.Errorf("acesso negado ou enquete não encontrada")
 		}
 	}
-
 
 	err := storage.DB.QueryRow(
 		`
@@ -87,7 +85,6 @@ func GetPollStats(
 		return nil, err
 	}
 
-
 	err = storage.DB.QueryRow(
 		`
 		SELECT COUNT(*)
@@ -100,7 +97,6 @@ func GetPollStats(
 	if err != nil {
 		return nil, fmt.Errorf("erro ao contar votos: %w", err)
 	}
-
 
 	rows, err := storage.DB.Query(
 		`
@@ -118,16 +114,13 @@ func GetPollStats(
 
 	defer rows.Close()
 
-
 	type answerCount struct {
 		text  string
 		votes int64
 	}
 
-
 	counts := make(map[int64]*answerCount)
 	order := make([]int64, 0)
-
 
 	for rows.Next() {
 
@@ -147,7 +140,6 @@ func GetPollStats(
 		}
 	}
 
-
 	voteRows, err := storage.DB.Query(
 		`
 		SELECT answer_ids
@@ -163,7 +155,6 @@ func GetPollStats(
 
 	defer voteRows.Close()
 
-
 	for voteRows.Next() {
 
 		var answerJSON string
@@ -171,7 +162,6 @@ func GetPollStats(
 		if err := voteRows.Scan(&answerJSON); err != nil {
 			continue
 		}
-
 
 		var ids []int64
 
@@ -182,7 +172,6 @@ func GetPollStats(
 			continue
 		}
 
-
 		for _, id := range ids {
 
 			if answer, ok := counts[id]; ok {
@@ -190,7 +179,6 @@ func GetPollStats(
 			}
 		}
 	}
-
 
 	for _, id := range order {
 
@@ -207,10 +195,8 @@ func GetPollStats(
 		)
 	}
 
-
 	return stats, nil
 }
-
 
 // VoteError carries HTTP status and message.
 type VoteError struct {
@@ -218,11 +204,9 @@ type VoteError struct {
 	Message string
 }
 
-
 func (e *VoteError) Error() string {
 	return e.Message
 }
-
 
 // CastVote validates and stores a vote.
 func CastVote(
@@ -231,26 +215,21 @@ func CastVote(
 	answerIDs []int64,
 ) *VoteError {
 
-
 	cpf = strings.TrimSpace(cpf)
-
 
 	if cpf == "" || len(answerIDs) == 0 {
 
 		return &VoteError{
-			Status: http.StatusBadRequest,
+			Status:  http.StatusBadRequest,
 			Message: "cpf and answer_ids required",
 		}
 	}
 
-
-
 	var (
-		pollType string
+		pollType  string
 		startDate string
-		endDate string
+		endDate   string
 	)
-
 
 	err := storage.DB.QueryRow(
 		`
@@ -265,44 +244,36 @@ func CastVote(
 		&endDate,
 	)
 
-
 	if err != nil {
 
 		if err == sql.ErrNoRows {
 			return &VoteError{
-				Status:http.StatusNotFound,
-				Message:"poll not found",
+				Status:  http.StatusNotFound,
+				Message: "poll not found",
 			}
 		}
 
-
 		return &VoteError{
-			Status:http.StatusInternalServerError,
-			Message:"database error",
+			Status:  http.StatusInternalServerError,
+			Message: "database error",
 		}
 	}
 
-
-
-	if !IsActive(startDate,endDate) {
+	if !IsActive(startDate, endDate) {
 
 		return &VoteError{
-			Status:http.StatusGone,
-			Message:"poll is no longer active",
+			Status:  http.StatusGone,
+			Message: "poll is no longer active",
 		}
 	}
-
-
 
 	if pollType == "radio" && len(answerIDs) > 1 {
 
 		return &VoteError{
-			Status:http.StatusBadRequest,
-			Message:"radio poll accepts only one answer",
+			Status:  http.StatusBadRequest,
+			Message: "radio poll accepts only one answer",
 		}
 	}
-
-
 
 	for _, answerID := range answerIDs {
 
@@ -319,12 +290,11 @@ func CastVote(
 			pollID,
 		).Scan(&id)
 
-
 		if err != nil {
 
 			return &VoteError{
-				Status:http.StatusBadRequest,
-				Message:fmt.Sprintf(
+				Status: http.StatusBadRequest,
+				Message: fmt.Sprintf(
 					"answer %d not found",
 					answerID,
 				),
@@ -332,10 +302,7 @@ func CastVote(
 		}
 	}
 
-
-
 	voterHash := security.HashCPF(cpf)
-
 
 	var existing int64
 
@@ -350,44 +317,35 @@ func CastVote(
 		voterHash,
 	).Scan(&existing)
 
-
-
 	if err == nil {
 
 		return &VoteError{
-			Status:http.StatusConflict,
-			Message:"cpf already voted",
+			Status:  http.StatusConflict,
+			Message: "cpf already voted",
 		}
 	}
-
 
 	if err != sql.ErrNoRows {
 
 		return &VoteError{
-			Status:http.StatusInternalServerError,
-			Message:"db error",
+			Status:  http.StatusInternalServerError,
+			Message: "db error",
 		}
 	}
-
-
 
 	answerJSON, err := json.Marshal(answerIDs)
 
 	if err != nil {
 
 		return &VoteError{
-			Status:http.StatusInternalServerError,
-			Message:"failed encoding vote",
+			Status:  http.StatusInternalServerError,
+			Message: "failed encoding vote",
 		}
 	}
-
-
 
 	now := time.Now().
 		UTC().
 		Format(time.RFC3339)
-
-
 
 	_, err = storage.DB.Exec(
 		`
@@ -406,16 +364,13 @@ func CastVote(
 		now,
 	)
 
-
 	if err != nil {
 
 		return &VoteError{
-			Status:http.StatusInternalServerError,
-			Message:"failed saving vote",
+			Status:  http.StatusInternalServerError,
+			Message: "failed saving vote",
 		}
 	}
-
-
 
 	_, err = storage.DB.Exec(
 		`
@@ -428,22 +383,18 @@ func CastVote(
 		cpf,
 	)
 
-
 	if err != nil {
 
 		return &VoteError{
-			Status:http.StatusInternalServerError,
-			Message:"failed updating voter",
+			Status:  http.StatusInternalServerError,
+			Message: "failed updating voter",
 		}
 	}
-
-
 
 	storage.LogAction(
 		"VOTE_SUBMITTED",
 		fmt.Sprintf("PollID: %d", pollID),
 	)
-
 
 	return nil
 }

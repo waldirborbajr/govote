@@ -24,12 +24,12 @@ func GetAuthenticatedAdmin(r *http.Request) (*models.Admin, error) {
 	}
 
 	var (
-		id       int64
-		name     string
-		phone    string
-		isSuper  int64
-		enabled  int64
-		dbUser   string
+		id      int64
+		name    string
+		phone   string
+		isSuper int64
+		enabled int64
+		dbUser  string
 	)
 
 	err = storage.DB.QueryRow(

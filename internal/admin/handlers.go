@@ -4,12 +4,11 @@
 package admin
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
-
-	sqinn "github.com/cvilsmeier/sqinn-go/v2"
 
 	"github.com/waldirborbajr/govote/internal/models"
 	"github.com/waldirborbajr/govote/internal/notify"
@@ -32,29 +31,36 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Busca por telefone
-	rows, err := storage.DB.QueryRows(`SELECT id, username, enabled FROM admin WHERE phone = ?`,
-		[]sqinn.Value{sqinn.StringValue(phone)},
-		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValInt64},
+	var (
+		id       int64
+		username string
+		enabled  int64
 	)
-	if err != nil || len(rows) == 0 {
+	err := storage.DB.QueryRow(
+		`SELECT id, username, enabled FROM admin WHERE phone = ?`,
+		phone,
+	).Scan(&id, &username, &enabled)
+	if err != nil {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Administrador não localizado com este telefone."})
 		return
 	}
 
-	if rows[0][2].Int64 == 0 {
+	if enabled == 0 {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Conta administrativa desativada."})
 		return
 	}
 
-	username := rows[0][1].String
 	tempPass := security.GenerateTemporaryPassword()
 
 	// Store hashed temp password and mark for change
-	storage.DB.MustExecParams(`UPDATE admin SET passcode = ?, needs_change = 1 WHERE id = ?`, 1, 2,
-		[]sqinn.Value{
-			sqinn.StringValue(security.HashPasscode(tempPass)),
-			sqinn.Int64Value(rows[0][0].Int64),
-		})
+	if _, err := storage.DB.Exec(
+		`UPDATE admin SET passcode = ?, needs_change = 1 WHERE id = ?`,
+		security.HashPasscode(tempPass),
+		id,
+	); err != nil {
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Erro ao gerar senha temporária."})
+		return
+	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, tempPass)
 	fmt.Printf("[Admin Temp Password] User: %s | Phone: %s | TempPass: %s\n", username, phone, tempPass)
@@ -80,28 +86,37 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		username = strings.ReplaceAll(strings.ReplaceAll(usernameRaw, ".", ""), "-", "")
 	}
 
-	rows, _ := storage.DB.QueryRows(`SELECT id, password_hash, needs_change, is_super, enabled, passcode FROM admin WHERE username = ?`,
-		[]sqinn.Value{sqinn.StringValue(username)},
-		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValInt64, sqinn.ValInt64, sqinn.ValInt64, sqinn.ValString})
+	var (
+		id           int64
+		passwordHash sql.NullString
+		needsChange  int64
+		isSuper      int64
+		enabled      int64
+		storedOTP    sql.NullString
+	)
 
-	if len(rows) == 0 {
+	err := storage.DB.QueryRow(
+		`SELECT id, password_hash, needs_change, is_super, enabled, passcode FROM admin WHERE username = ?`,
+		username,
+	).Scan(&id, &passwordHash, &needsChange, &isSuper, &enabled, &storedOTP)
+
+	if err != nil {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Credenciais inválidas"})
 		return
 	}
 
-	if rows[0][4].Int64 == 0 {
+	if enabled == 0 {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso administrativo revogado."})
 		return
 	}
 
-	storedOTP := rows[0][5].String
-	if storedOTP == "" || !security.CheckPasscode(storedOTP, password) {
+	if !storedOTP.Valid || storedOTP.String == "" || !security.CheckPasscode(storedOTP.String, password) {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."})
 		return
 	}
 
 	// Limpa o passcode
-	storage.DB.MustExecParams(`UPDATE admin SET passcode = NULL WHERE id = ?`, 1, 1, []sqinn.Value{sqinn.Int64Value(rows[0][0].Int64)})
+	storage.DB.Exec(`UPDATE admin SET passcode = NULL WHERE id = ?`, id)
 
 	token := security.GenerateJWT(username)
 	http.SetCookie(w, &http.Cookie{
@@ -114,11 +129,11 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	})
 
 	adminObj := &models.Admin{
-		ID:         rows[0][0].Int64,
-		Username:   username,
-		IsSuper:    rows[0][3].Int64 == 1,
-		Enabled:    true,
-		NeedsChange: rows[0][2].Int64 == 1,
+		ID:          id,
+		Username:    username,
+		IsSuper:     isSuper == 1,
+		Enabled:     true,
+		NeedsChange: needsChange == 1,
 	}
 
 	if adminObj.NeedsChange {
@@ -144,12 +159,11 @@ func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 		username = "admin"
 	}
 
-	storage.DB.MustExecParams(`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = ?`,
-		1, 2,
-		[]sqinn.Value{
-			sqinn.StringValue(security.HashPassword(newPass)),
-			sqinn.StringValue(username),
-		})
+	storage.DB.Exec(
+		`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = ?`,
+		security.HashPassword(newPass),
+		username,
+	)
 
 	adminObj := &models.Admin{Username: username, IsSuper: true, Enabled: true}
 	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
@@ -191,38 +205,40 @@ func HandleUIManageAdminsPost(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	storage.DB.MustExecParams(
+	if _, err := storage.DB.Exec(
 		`INSERT INTO admin (username, name, phone, is_super, enabled, created_at)
 		 VALUES (?, ?, ?, 0, ?, ?)
 		 ON CONFLICT(username) DO UPDATE SET name=excluded.name, phone=excluded.phone, enabled=excluded.enabled`,
-		1, 5,
-		[]sqinn.Value{
-			sqinn.StringValue(cpf),
-			sqinn.StringValue(name),
-			sqinn.StringValue(phone),
-			sqinn.Int64Value(storage.BoolToInt(enabledBool)),
-			sqinn.StringValue(now),
-		},
-	)
+		cpf,
+		name,
+		phone,
+		storage.BoolToInt(enabledBool),
+		now,
+	); err != nil {
+		renderManageAdminsPage(w, admin, "Erro ao salvar administrador.", "")
+		return
+	}
 
 	renderManageAdminsPage(w, admin, "", "Administrador salvo com sucesso!")
 }
 
 func renderManageAdminsPage(w http.ResponseWriter, currentAdmin *models.Admin, errMsg, successMsg string) {
-	rows, err := storage.DB.QueryRows(`SELECT id, username, COALESCE(name, ''), COALESCE(phone, ''), is_super, enabled FROM admin ORDER BY id DESC`, nil,
-		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValInt64, sqinn.ValInt64})
+	rows, err := storage.DB.Query(
+		`SELECT id, username, COALESCE(name, ''), COALESCE(phone, ''), is_super, enabled FROM admin ORDER BY id DESC`,
+	)
 
 	var list []models.Admin
 	if err == nil {
-		for _, row := range rows {
-			list = append(list, models.Admin{
-				ID:       row[0].Int64,
-				Username: row[1].String,
-				Name:     row[2].String,
-				Phone:    row[3].String,
-				IsSuper:  row[4].Int64 == 1,
-				Enabled:  row[5].Int64 == 1,
-			})
+		defer rows.Close()
+		for rows.Next() {
+			var a models.Admin
+			var isSuper, enabled int64
+			if err := rows.Scan(&a.ID, &a.Username, &a.Name, &a.Phone, &isSuper, &enabled); err != nil {
+				continue
+			}
+			a.IsSuper = isSuper == 1
+			a.Enabled = enabled == 1
+			list = append(list, a)
 		}
 	}
 
