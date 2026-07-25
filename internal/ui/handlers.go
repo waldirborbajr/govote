@@ -4,14 +4,13 @@
 package ui
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-
-	sqinn "github.com/cvilsmeier/sqinn-go/v2"
 
 	"github.com/waldirborbajr/govote/internal/models"
 	"github.com/waldirborbajr/govote/internal/notify"
@@ -70,19 +69,17 @@ func HandleUIAdminPolls(w http.ResponseWriter, r *http.Request) {
 }
 
 func renderUIAdminPollsList(w http.ResponseWriter, admin *models.Admin, msg string) {
-	var rows [][]sqinn.Value
+	var rows *sql.Rows
 	var err error
 
 	if admin.IsSuper {
-		rows, err = storage.DB.QueryRows(
+		rows, err = storage.DB.Query(
 			`SELECT id, title, type, start_date, end_date, created_by, created_at FROM polls ORDER BY created_at DESC`,
-			nil, []byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValInt64, sqinn.ValString},
 		)
 	} else {
-		rows, err = storage.DB.QueryRows(
+		rows, err = storage.DB.Query(
 			`SELECT id, title, type, start_date, end_date, created_by, created_at FROM polls WHERE created_by = ? ORDER BY created_at DESC`,
-			[]sqinn.Value{sqinn.Int64Value(admin.ID)},
-			[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValInt64, sqinn.ValString},
+			admin.ID,
 		)
 	}
 
@@ -90,18 +87,15 @@ func renderUIAdminPollsList(w http.ResponseWriter, admin *models.Admin, msg stri
 		web.Templates.ExecuteTemplate(w, "polls", web.PageData{Error: "Erro ao carregar enquetes do banco."})
 		return
 	}
+	defer rows.Close()
 
 	var polls []models.Poll
-	for _, row := range rows {
-		polls = append(polls, models.Poll{
-			ID:        row[0].Int64,
-			Title:     row[1].String,
-			Type:      row[2].String,
-			StartDate: row[3].String,
-			EndDate:   row[4].String,
-			CreatedBy: row[5].Int64,
-			CreatedAt: row[6].String,
-		})
+	for rows.Next() {
+		var p models.Poll
+		if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedBy, &p.CreatedAt); err != nil {
+			continue
+		}
+		polls = append(polls, p)
 	}
 
 	web.Templates.ExecuteTemplate(w, "polls", web.PageData{Polls: polls, AdminUser: admin, Message: msg})
@@ -134,18 +128,18 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 
 	passcode := security.GeneratePasscode()
 
-	storage.DB.MustExecParams(
+	if _, err := storage.DB.Exec(
 		`INSERT INTO voters (cpf, name, phone, passcode, verified_at)
 		 VALUES (?, ?, ?, ?, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
-		1, 4,
-		[]sqinn.Value{
-			sqinn.StringValue(cpf),
-			sqinn.StringValue(name),
-			sqinn.StringValue(phone),
-			sqinn.StringValue(security.HashPasscode(passcode)),
-		},
-	)
+		cpf,
+		name,
+		phone,
+		security.HashPasscode(passcode),
+	); err != nil {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Erro ao gerar código."})
+		return
+	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, passcode)
 	fmt.Printf("[PoC] CPF %s | Phone %s | Passcode %s\n", cpf, phone, passcode)
@@ -165,32 +159,27 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := storage.DB.QueryRows(`SELECT passcode, used_at FROM voters WHERE cpf = ?`,
-		[]sqinn.Value{sqinn.StringValue(cpf)},
-		[]byte{sqinn.ValString, sqinn.ValString},
-	)
-	if err != nil || len(rows) == 0 {
+	var storedHash, usedAt sql.NullString
+	err := storage.DB.QueryRow(`SELECT passcode, used_at FROM voters WHERE cpf = ?`, cpf).Scan(&storedHash, &usedAt)
+	if err != nil {
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf não encontrado"})
 		return
 	}
 
-	if rows[0][0].String == "" || !security.CheckPasscode(rows[0][0].String, passcode) {
+	if !storedHash.Valid || storedHash.String == "" || !security.CheckPasscode(storedHash.String, passcode) {
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "código incorreto"})
 		return
 	}
 
-	if rows[0][1].String != "" {
+	if usedAt.Valid && usedAt.String != "" {
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Este código já foi utilizado. Solicite um novo."})
 		return
 	}
 
-	storage.DB.MustExecParams(
+	storage.DB.Exec(
 		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
-		1, 2,
-		[]sqinn.Value{
-			sqinn.StringValue(time.Now().UTC().Format(time.RFC3339)),
-			sqinn.StringValue(cpf),
-		},
+		time.Now().UTC().Format(time.RFC3339),
+		cpf,
 	)
 
 	renderUIVoterPolls(w, cpf, "")
@@ -198,27 +187,24 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 
 func renderUIVoterPolls(w http.ResponseWriter, cpf, errMsg string) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	rows, err := storage.DB.QueryRows(
+	rows, err := storage.DB.Query(
 		`SELECT id, title, type, start_date, end_date, created_at FROM polls
 		 WHERE start_date <= ? AND end_date >= ? ORDER BY created_at DESC`,
-		[]sqinn.Value{sqinn.StringValue(now), sqinn.StringValue(now)},
-		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
+		now, now,
 	)
 	if err != nil {
 		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "db error"})
 		return
 	}
+	defer rows.Close()
 
 	var polls []models.Poll
-	for _, row := range rows {
-		polls = append(polls, models.Poll{
-			ID:        row[0].Int64,
-			Title:     row[1].String,
-			Type:      row[2].String,
-			StartDate: row[3].String,
-			EndDate:   row[4].String,
-			CreatedAt: row[5].String,
-		})
+	for rows.Next() {
+		var p models.Poll
+		if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt); err != nil {
+			continue
+		}
+		polls = append(polls, p)
 	}
 
 	web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Polls: polls, Error: errMsg})
@@ -242,48 +228,38 @@ func HandleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := storage.DB.QueryRows(
+	var p models.Poll
+	err = storage.DB.QueryRow(
 		`SELECT id, title, type, start_date, end_date, created_at FROM polls WHERE id = ?`,
-		[]sqinn.Value{sqinn.Int64Value(id)},
-		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString},
-	)
-	if err != nil || len(rows) == 0 {
+		id,
+	).Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt)
+	if err != nil {
 		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "poll not found"})
 		return
 	}
-
-	row := rows[0]
-	var p models.Poll
-	p.ID = row[0].Int64
-	p.Title = row[1].String
-	p.Type = row[2].String
-	p.StartDate = row[3].String
-	p.EndDate = row[4].String
-	p.CreatedAt = row[5].String
 
 	if !poll.IsActive(p.StartDate, p.EndDate) {
 		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "poll is no longer active"})
 		return
 	}
 
-	arows, err := storage.DB.QueryRows(
+	arows, err := storage.DB.Query(
 		`SELECT id, poll_id, text, display_order FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
-		[]sqinn.Value{sqinn.Int64Value(p.ID)},
-		[]byte{sqinn.ValInt64, sqinn.ValInt64, sqinn.ValString, sqinn.ValInt32},
+		p.ID,
 	)
 	if err != nil {
 		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "db error"})
 		return
 	}
+	defer arows.Close()
 
 	var answers []models.Answer
-	for _, arow := range arows {
-		answers = append(answers, models.Answer{
-			ID:           arow[0].Int64,
-			PollID:       arow[1].Int64,
-			Text:         arow[2].String,
-			DisplayOrder: int(arow[3].Int32),
-		})
+	for arows.Next() {
+		var a models.Answer
+		if err := arows.Scan(&a.ID, &a.PollID, &a.Text, &a.DisplayOrder); err != nil {
+			continue
+		}
+		answers = append(answers, a)
 	}
 	p.Answers = answers
 
@@ -358,40 +334,37 @@ func HandleUICreatePoll(w http.ResponseWriter, r *http.Request) {
 	answersRaw := strings.Split(r.FormValue("answers"), "\n")
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	storage.DB.MustExecParams(
+	res, err := storage.DB.Exec(
 		`INSERT INTO polls (title, type, start_date, end_date, allow_blank, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		1, 7,
-		[]sqinn.Value{
-			sqinn.StringValue(title),
-			sqinn.StringValue(pType),
-			sqinn.StringValue(startDate),
-			sqinn.StringValue(endDate),
-			sqinn.Int64Value(storage.BoolToInt(allowBlank)),
-			sqinn.Int64Value(admin.ID),
-			sqinn.StringValue(now),
-		},
+		title,
+		pType,
+		startDate,
+		endDate,
+		storage.BoolToInt(allowBlank),
+		admin.ID,
+		now,
 	)
+	if err != nil {
+		web.RespondError(w, http.StatusInternalServerError, "error creating poll")
+		return
+	}
 
-	rows, _ := storage.DB.QueryRows("SELECT id FROM polls ORDER BY id DESC LIMIT 1", nil, []byte{sqinn.ValInt64})
-	if len(rows) == 0 {
+	lastInsertID, err := res.LastInsertId()
+	if err != nil {
 		web.RespondError(w, http.StatusInternalServerError, "error retrieving poll id")
 		return
 	}
-	lastInsertID := rows[0][0].Int64
 
 	for i, text := range answersRaw {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
 		}
-		storage.DB.MustExecParams(
+		storage.DB.Exec(
 			`INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
-			1, 3,
-			[]sqinn.Value{
-				sqinn.Int64Value(lastInsertID),
-				sqinn.StringValue(text),
-				sqinn.Int64Value(int64(i)),
-			},
+			lastInsertID,
+			text,
+			i,
 		)
 	}
 
@@ -415,59 +388,52 @@ func HandleUIResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prows, err := storage.DB.QueryRows(`SELECT id, title, type, start_date, end_date, created_by FROM polls WHERE id = ?`,
-		[]sqinn.Value{sqinn.Int64Value(pollID)},
-		[]byte{sqinn.ValInt64, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValString, sqinn.ValInt64},
-	)
-	if err != nil || len(prows) == 0 {
+	var p models.Poll
+	err = storage.DB.QueryRow(`SELECT id, title, type, start_date, end_date, created_by FROM polls WHERE id = ?`, pollID).
+		Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedBy)
+	if err != nil {
 		renderUIAdminPollsList(w, admin, "Enquete não encontrada.")
 		return
 	}
 
-	createdBy := prows[0][5].Int64
-	if !admin.IsSuper && admin.ID != createdBy {
+	if !admin.IsSuper && admin.ID != p.CreatedBy {
 		renderUIAdminPollsList(w, admin, "Acesso negado: Você só pode ver os resultados das suas próprias enquetes.")
 		return
 	}
 
-	row := prows[0]
-	var p models.Poll
-	p.ID = row[0].Int64
-	p.Title = row[1].String
-	p.Type = row[2].String
-	p.StartDate = row[3].String
-	p.EndDate = row[4].String
-	p.CreatedBy = row[5].Int64
-
-	arows, err := storage.DB.QueryRows(`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
-		[]sqinn.Value{sqinn.Int64Value(pollID)},
-		[]byte{sqinn.ValInt64, sqinn.ValString},
-	)
+	arows, err := storage.DB.Query(`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`, pollID)
 	if err != nil {
 		renderUIAdminPollsList(w, admin, "Erro na leitura de respostas")
 		return
 	}
+	defer arows.Close()
 
 	answerMap := make(map[int64]*models.ResultAnswer)
 	var order []int64
-	for _, arow := range arows {
-		id := arow[0].Int64
-		text := arow[1].String
+	for arows.Next() {
+		var id int64
+		var text string
+		if err := arows.Scan(&id, &text); err != nil {
+			continue
+		}
 		answerMap[id] = &models.ResultAnswer{ID: id, Text: text, Votes: 0}
 		order = append(order, id)
 	}
 
-	vrows, err := storage.DB.QueryRows(`SELECT answer_ids FROM votes WHERE poll_id = ?`,
-		[]sqinn.Value{sqinn.Int64Value(pollID)},
-		[]byte{sqinn.ValString},
-	)
-
-	for _, vrow := range vrows {
-		var ids []int64
-		json.Unmarshal([]byte(vrow[0].String), &ids)
-		for _, id := range ids {
-			if a, ok := answerMap[id]; ok {
-				a.Votes++
+	vrows, err := storage.DB.Query(`SELECT answer_ids FROM votes WHERE poll_id = ?`, pollID)
+	if err == nil {
+		defer vrows.Close()
+		for vrows.Next() {
+			var answerJSON string
+			if err := vrows.Scan(&answerJSON); err != nil {
+				continue
+			}
+			var ids []int64
+			json.Unmarshal([]byte(answerJSON), &ids)
+			for _, id := range ids {
+				if a, ok := answerMap[id]; ok {
+					a.Votes++
+				}
 			}
 		}
 	}
