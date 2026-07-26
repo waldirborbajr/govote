@@ -83,28 +83,13 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      # Entra no seu tailnet como um nó efêmero — some sozinho do
-      # Tailscale assim que este job termina. Depois deste passo, o
-      # runner enxerga o Pi pelo IP/hostname do Tailscale (100.x.y.z ou
-      # nome.tailXXXX.ts.net), mesmo que a porta 22 do Pi não esteja
-      # exposta pra internet pública.
-      - name: Conectar ao tailnet
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
-      - name: Deploy no Servidor via SSH (via Tailscale)
+      - name: Deploy no Servidor via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          # Agora deve ser o IP (100.x.y.z) ou o hostname MagicDNS do Pi
-          # dentro do tailnet — não mais o IP público. Veja com
-          # `tailscale status` rodando no Pi, ou no admin console.
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
+          port: ${{ secrets.VPS_PORT || '22' }}
           script: |
             set -euo pipefail
             cd /opt/seu-app                    # <<< MUDE PARA O DIRETÓRIO NO SERVIDOR
