@@ -37,6 +37,8 @@ func Router(w http.ResponseWriter, r *http.Request) {
 		ui.HandleUIGlobalStats(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/ui/verify-form":
 		ui.HandleUIVerifyForm(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/static/htmx.min.js":
+		web.HandleStaticHTMX(w, r)
 	// UI Routes
 	case r.Method == http.MethodGet && r.URL.Path == "/":
 		ui.HandleUIIndex(w, r)

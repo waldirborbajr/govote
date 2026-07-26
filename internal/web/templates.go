@@ -29,7 +29,7 @@ var Templates = template.Must(template.New("ui").Parse(`
   <title>Vote API - PoC</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
-  <script src="https://unpkg.com/htmx.org@1.9.12/htmx.min.js"></script>
+  <script src="/static/htmx.min.js"></script>
 
   <script>
     function formatCPF(input) {
