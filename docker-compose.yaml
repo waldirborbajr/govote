@@ -13,8 +13,22 @@ services:
       # key.pem juntos, então o certificado TLS autoassinado também
       # sobrevive a um `docker compose up --force-recreate`.
       - ./data:/data
+    # Limites de recurso — importantes num Raspberry Pi com pouca RAM
+    # (Pi 3 = 1GB total). O binário Go em si usa pouco (o app é leve e
+    # sem CGO), mas sem limite um vazamento ou pico de tráfego pode
+    # comer RAM que o resto do sistema (SSH, outros containers) precisa.
+    # Ajuste conforme o modelo:
+    #   Pi 3 (1GB RAM total)  -> mem_limit: 128m
+    #   Pi 4/5 (4GB+ RAM)     -> pode subir para 256m-512m sem problema
+    mem_limit: 128m
+    mem_reservation: 64m
+    cpus: "1.0"
     environment:
       - TZ=America/Sao_Paulo
+      # Runtime do Go faz GC de forma proativa perto desse teto, em vez de
+      # deixar o kernel matar o processo com OOM killer quando bater no
+      # mem_limit acima. Deixe ~20% abaixo do mem_limit como margem.
+      - GOMEMLIMIT=100MiB
       # Obrigatório em produção: gere valores aleatórios longos, ex.
       # `openssl rand -hex 32`, e nunca reutilize os defaults de dev.
       - GOVOTE_JWT_SECRET=changeme-generate-a-long-random-value

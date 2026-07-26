@@ -1,7 +1,18 @@
 # ====================== BUILD STAGE ======================
 # go.mod exige "go 1.26" — usar imagem mais antiga faz o build falhar
 # com "go.mod requires go >= 1.26".
-FROM golang:1.26-alpine AS builder
+#
+# --platform=$BUILDPLATFORM força este estágio a rodar sempre na
+# arquitetura NATIVA do runner que está buildando (ex.: amd64 no GitHub
+# Actions), mesmo que o alvo final seja arm64 (Raspberry Pi). O Go faz
+# cross-compile de verdade (não precisa executar código arm64), então
+# isso evita emulação via QEMU no CI — build bem mais rápido.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+# Preenchidos automaticamente pelo buildx a partir de --platform na hora
+# do `docker buildx build` (ex.: TARGETOS=linux TARGETARCH=arm64).
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -16,7 +27,10 @@ COPY . .
 #    modernc.org/sqlite é pure-Go (sem CGO) e golang.org/x/crypto/argon2
 #    também, então não há nenhum link externo para tornar "-static" —
 #    a flag foi removida por ser um no-op enganoso.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+#    GOOS/GOARCH vêm de TARGETOS/TARGETARCH (definidos pelo --platform
+#    passado ao buildx), então o mesmo Dockerfile serve tanto pro
+#    Raspberry Pi (linux/arm64) quanto pra rodar local num PC amd64.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-s -w" \
     -o /govote ./cmd/govote
 

@@ -7,36 +7,51 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Evita dois deploys rodando ao mesmo tempo na mesma VPS se dois pushes
+# chegarem em sequência rápida.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-
-      - name: Instalar dependências
-        run: go mod download
+          # Lê a versão direto do go.mod (hoje "1.26") em vez de duplicar
+          # o número aqui — evita o job de teste ficar quebrado sempre que
+          # o go.mod for atualizado e alguém esquecer de mudar este arquivo
+          # também (foi exatamente o que quebrou o build local antes).
+          go-version-file: go.mod
+          # actions/setup-go já cacheia ~/go/pkg/mod e o build cache do Go
+          # sozinho quando cache: true (padrão), então o passo manual de
+          # actions/cache abaixo era redundante e foi removido.
 
       - name: Rodar testes
         run: go test ./... -v
 
+      - name: go vet
+        run: go vet ./...
+
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login no GHCR
         uses: docker/login-action@v3
@@ -50,6 +65,13 @@ jobs:
         with:
           context: .
           push: true
+          # Alvo é o Raspberry Pi (aarch64). O Dockerfile usa o truque
+          # --platform=$BUILDPLATFORM no estágio de build, então isto
+          # faz cross-compile nativo (sem QEMU) em vez de emular arm64
+          # inteiro no runner amd64 — bem mais rápido.
+          platforms: linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ghcr.io/waldirborbajr/${{ github.event.repository.name }}:latest
             ghcr.io/waldirborbajr/${{ github.event.repository.name }}:${{ github.sha }}
@@ -57,6 +79,7 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
@@ -68,13 +91,14 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT || '22' }}
           script: |
+            set -euo pipefail
             cd /opt/seu-app                    # <<< MUDE PARA O DIRETÓRIO NO SERVIDOR
 
             echo "🔄 Baixando nova imagem..."
             docker compose pull
 
             echo "♻️ Reiniciando containers..."
-            docker compose up -d --force-recreate
+            docker compose up -d
 
             echo "🧹 Limpando recursos antigos..."
             docker image prune -f
