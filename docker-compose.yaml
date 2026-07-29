@@ -31,8 +31,8 @@ services:
       - GOMEMLIMIT=100MiB
       # Obrigatório em produção: gere valores aleatórios longos, ex.
       # `openssl rand -hex 32`, e nunca reutilize os defaults de dev.
-      - GOVOTE_JWT_SECRET=changeme-generate-a-long-random-value
-      - GOVOTE_CPF_PEPPER=changeme-generate-a-long-random-value
+      - GOVOTE_JWT_SECRET=${GOVOTE_JWT_SECRET}
+      - GOVOTE_CPF_PEPPER=${GOVOTE_CPF_PEPPER}
       # Só defina como "true" se houver um proxy reverso confiável na frente
       # (nginx, Caddy, Traefik, Cloudflare etc.) que sobrescreve
       # X-Forwarded-For/X-Real-IP. Caso contrário, o rate limiter pode ser
