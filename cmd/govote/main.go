@@ -49,9 +49,19 @@ func main() {
 		},
 	}
 
+	// HTTP: /health responde direto (útil para probes/CI sem TLS).
+	// Qualquer outro path redireciona para HTTPS.
 	httpSrv := &http.Server{
-		Addr:         httpAddr,
-		Handler:      server.HTTPSRedirectHandler(httpsPort),
+		Addr: httpAddr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/health" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"status":"ok"}`))
+				return
+			}
+			server.HTTPSRedirectHandler(httpsPort)(w, r)
+		}),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -69,6 +79,7 @@ func main() {
 
 	go func() {
 		fmt.Println("↪️  Redirecionador HTTP → HTTPS em http://localhost" + httpAddr)
+		fmt.Println("   /health disponível em HTTP (sem redirect) para probes.")
 		fmt.Println("   Pressione Ctrl+C para encerrar gracefulmente.")
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("❌ Erro no servidor HTTP: %v", err)
