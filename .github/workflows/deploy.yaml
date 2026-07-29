@@ -104,7 +104,7 @@ jobs:
           port: 22
           script: |
             set -euo pipefail
-            cd "$HOME/ghdeploy"
+            cd "$HOME/ghdeploy/govote"
             echo "🔄 Baixando nova imagem..."
             docker compose pull
             echo "♻️ Reiniciando containers..."
