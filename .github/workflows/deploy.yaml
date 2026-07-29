@@ -98,24 +98,18 @@ jobs:
       - name: Deploy no Servidor via SSH (via Tailscale)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          # Agora deve ser o IP (100.x.y.z) ou o hostname MagicDNS do Pi
-          # dentro do tailnet — não mais o IP público. Veja com
-          # `tailscale status` rodando no Pi, ou no admin console.
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
             set -euo pipefail
-            cd /opt/seu-app                    # <<< MUDE PARA O DIRETÓRIO NO SERVIDOR
-
+            cd "$HOME/ghdeploy"
             echo "🔄 Baixando nova imagem..."
             docker compose pull
-
             echo "♻️ Reiniciando containers..."
             docker compose up -d
-
             echo "🧹 Limpando recursos antigos..."
             docker image prune -f
-
             echo "✅ Deploy concluído com sucesso!"
+      
