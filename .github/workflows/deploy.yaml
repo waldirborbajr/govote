@@ -23,14 +23,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          # Lê a versão direto do go.mod (hoje "1.26") em vez de duplicar
-          # o número aqui — evita o job de teste ficar quebrado sempre que
-          # o go.mod for atualizado e alguém esquecer de mudar este arquivo
-          # também (foi exatamente o que quebrou o build local antes).
+          # Lê a versão direto do go.mod em vez de duplicar o número aqui.
           go-version-file: go.mod
-          # actions/setup-go já cacheia ~/go/pkg/mod e o build cache do Go
-          # sozinho quando cache: true (padrão), então o passo manual de
-          # actions/cache abaixo era redundante e foi removido.
 
       - name: Rodar testes
         run: go test ./... -v
@@ -42,7 +36,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref_name == 'main'
     permissions:
       contents: read
       packages: write
@@ -79,18 +73,14 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Só roda em push direto na main (nunca em PR ou outras branches).
+    if: github.event_name == 'push' && github.ref_name == 'main'
     steps:
-      # Necessário para o docker-compose.yaml existir no runner antes do
-      # passo de SCP abaixo — o job deploy roda em runner limpo, sem
-      # nenhum arquivo do repo por padrão.
+      # Necessário para o docker-compose.yaml existir no runner antes do SCP.
       - uses: actions/checkout@v7
 
-      # Entra no seu tailnet como um nó efêmero — some sozinho do
-      # Tailscale assim que este job termina. Depois deste passo, o
-      # runner enxerga o Pi pelo IP/hostname do Tailscale (100.x.y.z ou
-      # nome.tailXXXX.ts.net), mesmo que a porta 22 do Pi não esteja
-      # exposta pra internet pública.
+      # Entra no tailnet como nó efêmero. Depois deste passo o runner
+      # enxerga o Pi pelo IP/hostname Tailscale.
       - name: Conectar ao tailnet
         uses: tailscale/github-action@v4
         with:
@@ -112,8 +102,6 @@ jobs:
       - name: Copiar docker-compose.yaml para o Pi
         uses: appleboy/scp-action@v1
         with:
-          # Mesmo host/credenciais do passo SSH — a conexão já está
-          # dentro do tailnet graças ao passo "Conectar ao tailnet" acima.
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -126,24 +114,56 @@ jobs:
       - name: Deploy no Servidor via SSH (via Tailscale)
         uses: appleboy/ssh-action@v1
         with:
-          # Agora deve ser o IP (100.x.y.z) ou o hostname MagicDNS do Pi
-          # dentro do tailnet — não mais o IP público. Veja com
-          # `tailscale status` rodando no Pi, ou no admin console.
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
             set -euo pipefail
-            # $HOME resolve para /home/borba na sessão SSH (VPS_USER=borba).
-            # Estrutura: ~/ghdeploy/<nome-do-projeto>/docker-compose.yaml
-            # Isso permite hospedar vários projetos no mesmo Pi, cada um
-            # com sua própria pasta e docker-compose.yaml.
             cd "$HOME/ghdeploy/govote"
-            echo "🔄 Baixando nova imagem..."
-            docker compose pull
+
+            IMAGE="ghcr.io/waldirborbajr/govote:${{ github.sha }}"
+            echo "🔄 Baixando imagem $IMAGE ..."
+            docker pull "$IMAGE"
+
+            # Atualiza a tag latest localmente (útil se o compose usar :latest)
+            docker tag "$IMAGE" "ghcr.io/waldirborbajr/govote:latest"
+
             echo "♻️ Reiniciando containers..."
-            docker compose up -d
-            echo "🧹 Limpando recursos antigos..."
-            docker image prune -f
+            # --force-recreate garante que mudanças de env/config sejam aplicadas
+            # --remove-orphans remove containers de serviços que saíram do compose
+            docker compose up -d --force-recreate --remove-orphans
+
+            echo "🧹 Limpando imagens antigas (mais de 24h)..."
+            docker image prune -f --filter "until=24h" || true
+
             echo "✅ Deploy concluído com sucesso!"
+
+      # Health check — ajuste a URL/porta conforme o seu app
+      - name: Health check
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -euo pipefail
+            cd "$HOME/ghdeploy/govote"
+
+            # Ajuste a URL abaixo para o endpoint real do govote
+            HEALTH_URL="http://localhost:8080/health"
+
+            for i in $(seq 1 12); do
+              if curl -sf --max-time 3 "$HEALTH_URL" > /dev/null 2>&1; then
+                echo "✅ Health check OK"
+                exit 0
+              fi
+              echo "Aguardando app subir... ($i/12)"
+              sleep 5
+            done
+
+            echo "❌ Health check falhou após 60s"
+            echo "--- Últimos logs ---"
+            docker compose logs --tail=80 || true
+            exit 1
