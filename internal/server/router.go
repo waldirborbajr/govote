@@ -17,6 +17,11 @@ import (
 // Router dispatches incoming requests to the appropriate handler.
 func Router(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/health":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+
 	case r.Method == http.MethodPost && r.URL.Path == "/auth/request-passcode":
 		web.RateLimitMiddleware(api.HandleRequestPasscode)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/auth/verify":
