@@ -101,6 +101,11 @@ jobs:
           tailscale ping -c 3 "${{ secrets.VPS_HOST }}" || true
           echo "--- teste TCP na porta 22 ---"
           nc -zv -w5 "${{ secrets.VPS_HOST }}" 22 || true
+          echo "--- ssh manual verboso ---"
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          timeout 20 ssh -vvv -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "echo conectou" 2>&1 | tail -80 || true
+          rm -f /tmp/deploy_key
 
       - name: Garantir pasta de deploy no Pi
         uses: appleboy/ssh-action@v1
@@ -181,8 +186,7 @@ jobs:
             echo "--- Últimos logs ---"
             docker compose logs --tail=80 || true
             exit 1
-
-
+            
 # name: CI/CD Go - Build & Deploy Docker
 
 # on:
