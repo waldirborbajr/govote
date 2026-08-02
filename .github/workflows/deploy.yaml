@@ -36,7 +36,9 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    # Roda em push direto na main OU quando disparado manualmente
+    # (workflow_dispatch) na main. Nunca em pull_request.
+    if: github.ref_name == 'main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
       packages: write
@@ -73,8 +75,9 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Só roda em push direto na main (nunca em PR ou outras branches).
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    # Mesma condição do build-and-push: push direto na main ou disparo
+    # manual na main. Nunca em pull_request ou outras branches.
+    if: github.ref_name == 'main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     steps:
       # Necessário para o docker-compose.yaml existir no runner antes do SCP.
       - uses: actions/checkout@v7
@@ -87,7 +90,7 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-          
+
       - name: Garantir pasta de deploy no Pi
         uses: appleboy/ssh-action@v1
         with:
