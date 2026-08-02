@@ -18,7 +18,7 @@ import (
 	"github.com/waldirborbajr/govote/internal/storage"
 )
 
-const version = "0.0.0" // atualizado automaticamente pelo workflow "Update Version and Release"
+const version = ""
 
 func main() {
 	db := storage.MustOpen("votes.db")
