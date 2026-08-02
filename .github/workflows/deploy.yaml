@@ -86,8 +86,8 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
+          tags: tag:ci,tag:rasp
+          
       - name: Garantir pasta de deploy no Pi
         uses: appleboy/ssh-action@v1
         with:
