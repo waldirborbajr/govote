@@ -18,6 +18,8 @@ import (
 	"github.com/waldirborbajr/govote/internal/storage"
 )
 
+const version = "0.0.0" // atualizado automaticamente pelo workflow "Update Version and Release"
+
 func main() {
 	db := storage.MustOpen("votes.db")
 	defer db.Close()
@@ -57,7 +59,7 @@ func main() {
 			if r.Method == http.MethodGet && r.URL.Path == "/health" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"status":"ok"}`))
+				_, _ = w.Write([]byte(`{"status":"ok","version":"` + version + `"}`))
 				return
 			}
 			server.HTTPSRedirectHandler(httpsPort)(w, r)
