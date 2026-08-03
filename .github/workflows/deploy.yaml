@@ -121,6 +121,10 @@ jobs:
           script: |
             set -euo pipefail
             mkdir -p "$HOME/ghdeploy/govote/data"
+            # O container roda como UID 65532 (não-root, imagem scratch).
+            # Sem isso, o SQLite falha com "unable to open database file (14)"
+            # porque o diretório pertence a $USER (ex: borba) com modo 755.
+            sudo chown -R 65532:65532 "$HOME/ghdeploy/govote/data"
 
       - name: Copiar docker-compose.yaml para o Pi
         uses: appleboy/scp-action@v1
