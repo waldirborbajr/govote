@@ -179,7 +179,7 @@ jobs:
             cd "$HOME/ghdeploy/govote"
 
             # Ajuste a URL abaixo para o endpoint real do govote
-            HEALTH_URL="http://localhost:8080/health"
+            HEALTH_URL="http://localhost:9080/health"
 
             for i in $(seq 1 12); do
               if curl -sf --max-time 3 "$HEALTH_URL" > /dev/null 2>&1; then
