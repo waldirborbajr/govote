@@ -1,5 +1,8 @@
 # Vote API — Usage Guide
 
+[![CI/CD Go - Build & Deploy Docker](https://github.com/waldirborbajr/govote/actions/workflows/deploy.yaml/badge.svg)](https://github.com/waldirborbajr/govote/actions/workflows/deploy.yaml)
+[![Update Version and Release](https://github.com/waldirborbajr/govote/actions/workflows/update-api-version.yaml/badge.svg)](https://github.com/waldirborbajr/govote/actions/workflows/update-api-version.yaml)
+
 Single-file REST API for secure voting with WhatsApp authentication (PoC).
 
 ## Build & Run
