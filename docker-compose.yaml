@@ -4,7 +4,7 @@ services:
     container_name: govote
     restart: unless-stopped
     ports:
-      - "8080:8080"   # HTTP (redireciona para HTTPS)
+      - "9080:9080"   # HTTP (redireciona para HTTPS)
       - "8443:8443"   # HTTPS
     volumes:
       # Diretório, não arquivo: evita o Docker criar um diretório vazio no
