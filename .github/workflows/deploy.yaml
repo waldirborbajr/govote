@@ -3,8 +3,29 @@ name: CI/CD Go - Build & Deploy Docker
 on:
   push:
     branches: [ main ]
+    # Só dispara automaticamente se algo que afeta o build/deploy mudou.
+    # Mudanças em docs, imagens, README, etc. não acionam o pipeline.
+    # workflow_dispatch (disparo manual) ignora esse filtro e sempre funciona.
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'docker-compose.yaml'
+      - '.github/workflows/**'
+      # Assets embutidos via go:embed (htmx, CSS vendorizado) — afetam
+      # o binário final mesmo não sendo .go.
+      - 'internal/web/static/**'
   pull_request:
     branches: [ main ]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'docker-compose.yaml'
+      - '.github/workflows/**'
+      - 'internal/web/static/**'
   workflow_dispatch:
 
 # Evita dois deploys rodando ao mesmo tempo na mesma VPS se dois pushes
