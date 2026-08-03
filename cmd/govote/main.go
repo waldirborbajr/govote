@@ -34,7 +34,7 @@ func main() {
 	}
 
 	const (
-		httpAddr  = ":8080"
+		httpAddr  = ":9080"
 		httpsAddr = ":8443"
 		httpsPort = ":8443" // usado para montar a URL de redirecionamento
 	)
