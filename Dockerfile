@@ -59,6 +59,6 @@ COPY --from=builder /govote /govote
 # (veja o comentário no docker-compose.yaml).
 USER 65532:65532
 
-EXPOSE 8080 8443
+EXPOSE 9080 8443
 
 ENTRYPOINT ["/govote"]
