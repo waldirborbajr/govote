@@ -1,9 +1,12 @@
+<p align="center">
+  <img width="256" height="256" src="./assets/logo.png" />
+</p>
+<h1 align="center">Single-file REST API for secure voting with WhatsApp authentication (PoC).</h1>
+
 # Vote API — Usage Guide
 
 [![CI/CD Go - Build & Deploy Docker](https://github.com/waldirborbajr/govote/actions/workflows/deploy.yaml/badge.svg)](https://github.com/waldirborbajr/govote/actions/workflows/deploy.yaml)
 [![Update Version and Release](https://github.com/waldirborbajr/govote/actions/workflows/update-api-version.yaml/badge.svg)](https://github.com/waldirborbajr/govote/actions/workflows/update-api-version.yaml)
-
-Single-file REST API for secure voting with WhatsApp authentication (PoC).
 
 ## Build & Run
 
