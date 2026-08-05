@@ -26,8 +26,11 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		// CSP estrita: scripts só do próprio origin (htmx embutido em /static).
+		// style-src mantém 'unsafe-inline' por causa de utilitários inline do UI;
+		// object/frame/base bloqueados; connect-src limitado ao self (HTMX XHR).
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+			"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; form-action 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; upgrade-insecure-requests")
 		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})

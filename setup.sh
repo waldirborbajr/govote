@@ -86,7 +86,15 @@ mkdir -p "$DATA_DIR"
 chown -R "${CONTAINER_UID}:${CONTAINER_GID}" "$DATA_DIR"
 chmod 700 "$DATA_DIR"
 
-echo "📁 $DATA_DIR pronto (dono ${CONTAINER_UID}:${CONTAINER_GID})."
+# votes.db: somente o UID do container lê/escreve (evita world-readable com CPFs hashed).
+DB_FILE="$DATA_DIR/votes.db"
+if [ ! -f "$DB_FILE" ]; then
+  touch "$DB_FILE"
+fi
+chown "${CONTAINER_UID}:${CONTAINER_GID}" "$DB_FILE"
+chmod 600 "$DB_FILE"
+
+echo "📁 $DATA_DIR pronto (dono ${CONTAINER_UID}:${CONTAINER_GID}, votes.db mode 600)."
 echo ""
 echo "✅ Setup concluído. Suba com:"
 echo "   docker compose up -d"

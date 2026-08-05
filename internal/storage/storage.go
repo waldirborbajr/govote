@@ -114,13 +114,14 @@ CREATE TABLE IF NOT EXISTS answers (
 );
 
 CREATE TABLE IF NOT EXISTS voters (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	cpf         TEXT UNIQUE,
-	name        TEXT,
-	phone       TEXT,
-	passcode    TEXT,
-	verified_at TEXT,
-	used_at     TEXT
+	id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+	cpf                  TEXT UNIQUE,
+	name                 TEXT,
+	phone                TEXT,
+	passcode             TEXT,
+	passcode_expires_at  TEXT,
+	verified_at          TEXT,
+	used_at              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS votes (

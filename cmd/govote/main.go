@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/waldirborbajr/govote/internal/server"
+	"github.com/waldirborbajr/govote/internal/security"
 	"github.com/waldirborbajr/govote/internal/storage"
 	"github.com/waldirborbajr/govote/internal/web"
 )
@@ -50,6 +51,8 @@ func run() error {
 	if err := storage.InitDB(); err != nil {
 		return fmt.Errorf("init db falhou: %w", err)
 	}
+
+	security.MustValidateSecrets()
 
 	cert, err := server.EnsureSelfSignedCert()
 	if err != nil {

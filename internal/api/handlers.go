@@ -81,11 +81,13 @@ func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	passcode := security.GeneratePasscode()
 
 	whatsappURL := ""
+	expiresAt := time.Now().UTC().Add(security.PasscodeTTL).Format(time.RFC3339)
 	if _, err := storage.DB.Exec(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at, used_at)
-		 VALUES (?, ?, ?, ?, NULL, NULL)
+		`INSERT INTO voters (cpf, name, phone, passcode, passcode_expires_at, verified_at, used_at)
+		 VALUES (?, ?, ?, ?, ?, NULL, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET
 		   passcode=excluded.passcode,
+		   passcode_expires_at=excluded.passcode_expires_at,
 		   name=excluded.name,
 		   phone=excluded.phone,
 		   verified_at=NULL,
@@ -94,6 +96,7 @@ func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 		req.Name,
 		req.Phone,
 		security.HashPasscode(passcode),
+		expiresAt,
 	); err == nil {
 		whatsappURL = notify.BuildWhatsAppURL(req.Phone, passcode)
 		storage.LogAction("PASSCODE_ISSUED", "cpf_fp="+security.TokenFingerprint(req.CPF))
@@ -132,16 +135,26 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 
 	const genericAuthErr = "credenciais inválidas"
 
-	var storedHash, usedAt sql.NullString
+	var storedHash, usedAt, expiresAt sql.NullString
 	err := storage.DB.QueryRow(
-		`SELECT passcode, used_at FROM voters WHERE cpf = ?`,
+		`SELECT passcode, used_at, passcode_expires_at FROM voters WHERE cpf = ?`,
 		req.CPF,
-	).Scan(&storedHash, &usedAt)
+	).Scan(&storedHash, &usedAt, &expiresAt)
+
+	notExpired := true
+	if expiresAt.Valid && expiresAt.String != "" {
+		if exp, e := time.Parse(time.RFC3339, expiresAt.String); e == nil {
+			notExpired = time.Now().UTC().Before(exp)
+		} else {
+			notExpired = false
+		}
+	}
 
 	ok := err == nil &&
 		storedHash.Valid && storedHash.String != "" &&
 		security.CheckPasscode(storedHash.String, req.Passcode) &&
-		!(usedAt.Valid && usedAt.String != "")
+		!(usedAt.Valid && usedAt.String != "") &&
+		notExpired
 
 	if !ok {
 		storage.RecordFailure(lockKey)
@@ -154,7 +167,7 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	storage.DB.Exec(
-		`UPDATE voters SET passcode = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
+		`UPDATE voters SET passcode = NULL, passcode_expires_at = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
 		now,
 		now,
 		req.CPF,

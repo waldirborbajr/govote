@@ -257,6 +257,20 @@ func TokenFingerprint(token string) string {
 // VoterTokenTTL is the lifetime of a post-verify voting session token.
 const VoterTokenTTL = 30 * time.Minute
 
+// PasscodeTTL is how long a voter OTP remains valid after issuance.
+// Overridable via GOVOTE_PASSCODE_TTL_MINUTES (default 10).
+var PasscodeTTL = loadPasscodeTTL()
+
+func loadPasscodeTTL() time.Duration {
+	if v := os.Getenv("GOVOTE_PASSCODE_TTL_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	return 10 * time.Minute
+}
+
+
 // GenerateVoterToken issues a short-lived signed token bound to a CPF.
 // Format: base64url(cpf)|expiry|iat|jti . hmac
 func GenerateVoterToken(cpf string) string {
@@ -372,4 +386,25 @@ func HashPasscode(passcode string) string {
 // PHC-format hash regardless of which Hash* function created it.
 func CheckPasscode(storedHash, passcode string) bool {
 	return CheckPassword(storedHash, passcode)
+}
+
+
+// MustValidateSecrets aborts startup when secrets are missing/too short.
+// In production (GOVOTE_ENV=production|prod or GOVOTE_REQUIRE_SECRETS=true) fatals;
+// otherwise only warns.
+func MustValidateSecrets() {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("GOVOTE_ENV")))
+	strict := env == "production" || env == "prod" || os.Getenv("GOVOTE_REQUIRE_SECRETS") == "true"
+
+	check := func(name string, val []byte) {
+		if len(val) < 32 {
+			msg := name + " deve ter ≥ 32 bytes (openssl rand -hex 32)"
+			if strict {
+				log.Fatalf("❌ %s", msg)
+			}
+			log.Printf("⚠️  %s — valor atual tem %d bytes", msg, len(val))
+		}
+	}
+	check("GOVOTE_JWT_SECRET", jwtSecret)
+	check("GOVOTE_CPF_PEPPER", cpfPepper)
 }

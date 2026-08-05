@@ -1,3 +1,4 @@
+# Secrets (GOVOTE_JWT_SECRET, GOVOTE_CPF_PEPPER) MUST come from runtime env/compose — never bake into the image.
 # ====================== BUILD STAGE ======================
 # go.mod exige "go 1.26" — usar imagem mais antiga faz o build falhar
 # com "go.mod requires go >= 1.26".

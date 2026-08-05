@@ -16,6 +16,7 @@ import (
 	"github.com/waldirborbajr/govote/internal/poll"
 	"github.com/waldirborbajr/govote/internal/security"
 	"github.com/waldirborbajr/govote/internal/storage"
+	"github.com/waldirborbajr/govote/internal/validate"
 	"github.com/waldirborbajr/govote/internal/web"
 )
 
@@ -120,18 +121,28 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	phone = strings.ReplaceAll(phone, "-", "")
 	phone = strings.ReplaceAll(phone, " ", "")
 
-	if len(cpf) != 11 {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "CPF inválido"})
+	if err := validate.CPF(cpf); err != nil {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)})
+		return
+	}
+	if err := validate.Name(name); err != nil {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)})
+		return
+	}
+	if err := validate.Phone(phone); err != nil {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)})
 		return
 	}
 
 	passcode := security.GeneratePasscode()
+	expiresAt := time.Now().UTC().Add(security.PasscodeTTL).Format(time.RFC3339)
 
 	if _, err := storage.DB.Exec(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at, used_at)
-		 VALUES (?, ?, ?, ?, NULL, NULL)
+		`INSERT INTO voters (cpf, name, phone, passcode, passcode_expires_at, verified_at, used_at)
+		 VALUES (?, ?, ?, ?, ?, NULL, NULL)
 		 ON CONFLICT(cpf) DO UPDATE SET
 		   passcode=excluded.passcode,
+		   passcode_expires_at=excluded.passcode_expires_at,
 		   name=excluded.name,
 		   phone=excluded.phone,
 		   verified_at=NULL,
@@ -140,6 +151,7 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 		name,
 		phone,
 		security.HashPasscode(passcode),
+		expiresAt,
 	); err != nil {
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Se os dados forem válidos, um código será enviado.", CSRFToken: web.EnsureCSRFToken(w, r)})
 		return
@@ -166,6 +178,14 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf e passcode obrigatórios", CSRFToken: csrf})
 		return
 	}
+	if err := validate.CPF(cpf); err != nil {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: csrf})
+		return
+	}
+	if err := validate.Passcode(passcode); err != nil {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: csrf})
+		return
+	}
 
 	lockKey := storage.LockoutKeyCPF(cpf)
 	if locked, remaining := storage.IsLocked(lockKey); locked {
@@ -177,13 +197,26 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	const generic = "credenciais inválidas"
-	var storedHash, usedAt sql.NullString
-	err := storage.DB.QueryRow(`SELECT passcode, used_at FROM voters WHERE cpf = ?`, cpf).Scan(&storedHash, &usedAt)
+	var storedHash, usedAt, expiresAt sql.NullString
+	err := storage.DB.QueryRow(
+		`SELECT passcode, used_at, passcode_expires_at FROM voters WHERE cpf = ?`,
+		cpf,
+	).Scan(&storedHash, &usedAt, &expiresAt)
+
+	notExpired := true
+	if expiresAt.Valid && expiresAt.String != "" {
+		if exp, e := time.Parse(time.RFC3339, expiresAt.String); e == nil {
+			notExpired = time.Now().UTC().Before(exp)
+		} else {
+			notExpired = false
+		}
+	}
 
 	ok := err == nil &&
 		storedHash.Valid && storedHash.String != "" &&
 		security.CheckPasscode(storedHash.String, passcode) &&
-		!(usedAt.Valid && usedAt.String != "")
+		!(usedAt.Valid && usedAt.String != "") &&
+		notExpired
 
 	if !ok {
 		storage.RecordFailure(lockKey)
@@ -196,7 +229,7 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	storage.DB.Exec(
-		`UPDATE voters SET passcode = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
+		`UPDATE voters SET passcode = NULL, passcode_expires_at = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
 		now, now, cpf,
 	)
 
@@ -374,6 +407,23 @@ func HandleUICreatePoll(w http.ResponseWriter, r *http.Request) {
 	endDate := r.FormValue("end_date")
 	allowBlank := r.FormValue("allow_blank") == "true"
 	answersRaw := strings.Split(r.FormValue("answers"), "\n")
+
+	if err := validate.PollTitle(title); err != nil {
+		web.RespondError(w, http.StatusBadRequest, "dados inválidos")
+		return
+	}
+	if pType != "radio" && pType != "checkbox" {
+		web.RespondError(w, http.StatusBadRequest, "dados inválidos")
+		return
+	}
+	if _, err := time.Parse(time.RFC3339, startDate); err != nil {
+		// accept datetime-local without Z by appending :00Z if needed — still generic error
+		if _, err2 := time.Parse("2006-01-02T15:04", startDate); err2 != nil {
+			web.RespondError(w, http.StatusBadRequest, "dados inválidos")
+			return
+		}
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	res, err := storage.DB.Exec(
