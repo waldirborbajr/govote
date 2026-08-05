@@ -17,6 +17,33 @@ import (
 	"github.com/waldirborbajr/govote/internal/web"
 )
 
+// setAdminCookie grava o cookie de sessão com flags de segurança.
+// Secure=true exige HTTPS (já usado pelo app em :8443).
+func setAdminCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "admin_token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(security.AdminTokenTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// clearAdminCookie remove o cookie de sessão (logout).
+func clearAdminCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "admin_token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
 // HandleUIRequestAdminTemporaryPassword handles the new "Solicitar Senha" feature.
 func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -30,7 +57,6 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Busca por telefone
 	var (
 		id       int64
 		username string
@@ -52,9 +78,10 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 
 	tempPass := security.GenerateTemporaryPassword()
 
-	// Store hashed temp password and mark for change
+	// Store hashed temp password and mark for change.
+	// Incrementa token_version para invalidar sessões antigas.
 	if _, err := storage.DB.Exec(
-		`UPDATE admin SET passcode = ?, needs_change = 1 WHERE id = ?`,
+		`UPDATE admin SET passcode = ?, needs_change = 1, token_version = token_version + 1 WHERE id = ?`,
 		security.HashPasscode(tempPass),
 		id,
 	); err != nil {
@@ -63,6 +90,8 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, tempPass)
+	// Nunca logar o token JWT. TempPass só em PoC (stdout); em produção
+	// o envio real via WhatsApp substitui este log.
 	fmt.Printf("[Admin Temp Password] User: %s | Phone: %s | TempPass: %s\n", username, phone, tempPass)
 
 	web.Templates.ExecuteTemplate(w, "admin_passcode_sent", web.PageData{WhatsAppURL: whatsappURL})
@@ -70,11 +99,10 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 
 // HandleUIRequestAdminOTP (legacy for 4-digit, kept for compatibility)
 func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
-	// ... (existing code, can call new func or keep as is)
-	HandleUIRequestAdminTemporaryPassword(w, r) // reuse for now
+	HandleUIRequestAdminTemporaryPassword(w, r)
 }
 
-// HandleAdminLoginPost - enhanced to handle needs_change
+// HandleAdminLoginPost - enhanced to handle needs_change and token_version.
 func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
@@ -93,12 +121,14 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		isSuper      int64
 		enabled      int64
 		storedOTP    sql.NullString
+		tokenVersion int64
 	)
 
 	err := storage.DB.QueryRow(
-		`SELECT id, password_hash, needs_change, is_super, enabled, passcode FROM admin WHERE username = ?`,
+		`SELECT id, password_hash, needs_change, is_super, enabled, passcode, COALESCE(token_version, 0)
+		 FROM admin WHERE username = ?`,
 		username,
-	).Scan(&id, &passwordHash, &needsChange, &isSuper, &enabled, &storedOTP)
+	).Scan(&id, &passwordHash, &needsChange, &isSuper, &enabled, &storedOTP, &tokenVersion)
 
 	if err != nil {
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Credenciais inválidas"})
@@ -115,18 +145,11 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Limpa o passcode
+	// Limpa o passcode (uso único)
 	storage.DB.Exec(`UPDATE admin SET passcode = NULL WHERE id = ?`, id)
 
-	token := security.GenerateJWT(username)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "admin_token",
-		Value:    token,
-		Path:     "/",
-		MaxAge:   86400,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
+	token := security.GenerateJWT(username, tokenVersion)
+	setAdminCookie(w, token)
 
 	adminObj := &models.Admin{
 		ID:          id,
@@ -144,8 +167,11 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
 }
 
-// HandleAdminChangePassword updated to support any admin
+// HandleAdminChangePassword updated to support any admin.
+// Invalida todas as sessões antigas incrementando token_version e emite
+// um novo cookie com a versão atualizada.
 func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
 	newPass := r.FormValue("new_password")
 
@@ -154,23 +180,62 @@ func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := r.FormValue("username") // if passed, or from session
-	if username == "" {
-		username = "admin"
+	// Preferir admin autenticado; fallback ao form/username "admin"
+	var username string
+	var isSuper bool
+	if adm, err := web.GetAuthenticatedAdmin(r); err == nil && adm != nil {
+		username = adm.Username
+		isSuper = adm.IsSuper
+	} else {
+		username = strings.TrimSpace(r.FormValue("username"))
+		if username == "" {
+			username = "admin"
+		}
+		isSuper = true // legado: fluxo de primeiro acesso do super
 	}
 
-	storage.DB.Exec(
-		`UPDATE admin SET password_hash = ?, needs_change = 0 WHERE username = ?`,
+	res, err := storage.DB.Exec(
+		`UPDATE admin
+		 SET password_hash = ?, needs_change = 0, token_version = token_version + 1
+		 WHERE username = ?`,
 		security.HashPassword(newPass),
 		username,
 	)
+	if err != nil {
+		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Erro ao atualizar senha."})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Administrador não encontrado."})
+		return
+	}
 
-	adminObj := &models.Admin{Username: username, IsSuper: true, Enabled: true}
+	var newVersion int64
+	_ = storage.DB.QueryRow(
+		`SELECT COALESCE(token_version, 0) FROM admin WHERE username = ?`,
+		username,
+	).Scan(&newVersion)
+
+	token := security.GenerateJWT(username, newVersion)
+	setAdminCookie(w, token)
+
+	adminObj := &models.Admin{Username: username, IsSuper: isSuper, Enabled: true}
 	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
 }
 
-// ... rest of the file remains the same (Manage Admins etc.)
-// HandleUIManageAdmins and others unchanged
+// HandleAdminLogout invalida a sessão atual (cookie) e incrementa
+// token_version para invalidar outros tokens do mesmo admin.
+func HandleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	if adm, err := web.GetAuthenticatedAdmin(r); err == nil && adm != nil {
+		storage.DB.Exec(
+			`UPDATE admin SET token_version = token_version + 1 WHERE username = ?`,
+			adm.Username,
+		)
+	}
+	clearAdminCookie(w)
+	http.Redirect(w, r, "/ui/admin", http.StatusSeeOther)
+}
+
 func HandleUIManageAdmins(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
@@ -206,9 +271,12 @@ func HandleUIManageAdminsPost(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if _, err := storage.DB.Exec(
-		`INSERT INTO admin (username, name, phone, is_super, enabled, created_at)
-		 VALUES (?, ?, ?, 0, ?, ?)
-		 ON CONFLICT(username) DO UPDATE SET name=excluded.name, phone=excluded.phone, enabled=excluded.enabled`,
+		`INSERT INTO admin (username, name, phone, is_super, enabled, token_version, created_at)
+		 VALUES (?, ?, ?, 0, ?, 0, ?)
+		 ON CONFLICT(username) DO UPDATE SET
+		   name=excluded.name,
+		   phone=excluded.phone,
+		   enabled=excluded.enabled`,
 		cpf,
 		name,
 		phone,

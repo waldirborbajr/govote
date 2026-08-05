@@ -66,58 +66,57 @@ func LogAction(action, detail string) {
 }
 
 func createTables() error {
-
 	schema := `
-
 CREATE TABLE IF NOT EXISTS admin (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	username TEXT UNIQUE,
-	name TEXT,
-	phone TEXT,
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	username      TEXT    UNIQUE NOT NULL,
+	name          TEXT,
+	phone         TEXT,
 	password_hash TEXT,
-	passcode TEXT,
-	needs_change INTEGER DEFAULT 0,
-	is_super INTEGER DEFAULT 0,
-	enabled INTEGER DEFAULT 1,
-	created_at TEXT
+	passcode      TEXT,
+	needs_change  INTEGER NOT NULL DEFAULT 0,
+	is_super      INTEGER NOT NULL DEFAULT 0,
+	enabled       INTEGER NOT NULL DEFAULT 1,
+	token_version INTEGER NOT NULL DEFAULT 0,
+	created_at    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS polls (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	title TEXT NOT NULL,
-	type TEXT NOT NULL,
-	start_date TEXT,
-	end_date TEXT,
-	allow_blank INTEGER DEFAULT 0,
-	created_by INTEGER,
-	created_at TEXT
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	title       TEXT    NOT NULL,
+	type        TEXT    NOT NULL,
+	start_date  TEXT,
+	end_date    TEXT,
+	allow_blank INTEGER NOT NULL DEFAULT 0,
+	created_by  INTEGER,
+	created_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS answers (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	poll_id INTEGER NOT NULL,
-	text TEXT NOT NULL,
-	display_order INTEGER DEFAULT 0
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	poll_id       INTEGER NOT NULL,
+	text          TEXT    NOT NULL,
+	display_order INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS voters (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	cpf TEXT UNIQUE,
-	name TEXT,
-	phone TEXT,
-	passcode TEXT,
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	cpf         TEXT UNIQUE,
+	name        TEXT,
+	phone       TEXT,
+	passcode    TEXT,
 	verified_at TEXT,
-	used_at TEXT
+	used_at     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS votes (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	poll_id INTEGER,
-	voter_hash TEXT,
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	poll_id    INTEGER NOT NULL,
+	voter_hash TEXT    NOT NULL,
 	answer_ids TEXT,
-	voted_at TEXT
+	voted_at   TEXT,
+	UNIQUE(poll_id, voter_hash)
 );
-
 `
 
 	if _, err := DB.Exec(schema); err != nil {
@@ -125,6 +124,5 @@ CREATE TABLE IF NOT EXISTS votes (
 	}
 
 	log.Println("SQLite schema ready")
-
 	return nil
 }

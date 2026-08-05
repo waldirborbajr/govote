@@ -24,6 +24,10 @@ import (
 // variável de ambiente GOVOTE_JWT_SECRET em qualquer ambiente que não seja
 // desenvolvimento local — o valor de fallback é público (está no código-fonte)
 // e permite forjar tokens de admin.
+//
+// Em produção use no mínimo 32 bytes aleatórios:
+//
+//	openssl rand -hex 32
 var jwtSecret = loadSecret("GOVOTE_JWT_SECRET", "insecure-dev-jwt-secret-change-me")
 
 // cpfPepper é o "salt" fixo (por deployment) usado em HashCPF. DEVE ser
@@ -31,13 +35,22 @@ var jwtSecret = loadSecret("GOVOTE_JWT_SECRET", "insecure-dev-jwt-secret-change-
 // para o porquê de não ser um salt aleatório por registro.
 var cpfPepper = loadSecret("GOVOTE_CPF_PEPPER", "insecure-dev-cpf-pepper-change-me")
 
+// AdminTokenTTL é a validade dos tokens de sessão de administrador.
+// Valor curto (8h) reduz a janela de abuso se o cookie vazar.
+const AdminTokenTTL = 8 * time.Hour
+
 // loadSecret lê um segredo de variável de ambiente, ou usa um valor de
 // desenvolvimento (registrando um aviso) caso não esteja definida.
+// Em produção o aviso deve ser tratado como erro de configuração.
 func loadSecret(envVar, devFallback string) []byte {
 	if v := os.Getenv(envVar); v != "" {
-		return []byte(v)
+		b := []byte(v)
+		if len(b) < 32 {
+			log.Printf("⚠️  %s tem menos de 32 bytes — use `openssl rand -hex 32` para gerar um valor adequado.", envVar)
+		}
+		return b
 	}
-	log.Printf("⚠️  %s não definida — usando valor de desenvolvimento INSEGURO. Configure essa variável antes de ir para produção.", envVar)
+	log.Printf("⚠️  %s não definida — usando valor de desenvolvimento INSEGURO. Configure essa variável antes de ir para produção (openssl rand -hex 32).", envVar)
 	return []byte(devFallback)
 }
 
@@ -149,14 +162,35 @@ func CheckPassword(storedHash, password string) bool {
 	return subtle.ConstantTimeCompare(computedHash, expectedHash) == 1
 }
 
-// GenerateJWT cria um token assinado no formato username|expiry|hmac(username|expiry).
-// Não é um JWT padrão (RFC 7519), mas é assinado com HMAC-SHA256, então não pode
-// ser forjado sem conhecer jwtSecret.
-func GenerateJWT(username string) string {
-	expiry := time.Now().Add(24 * time.Hour).Unix()
-	payload := fmt.Sprintf("%s|%d", username, expiry)
+// ---------------------------------------------------------------------------
+// Token de sessão de admin (formato customizado, NÃO é JWT RFC 7519)
+//
+// Formato: base64url(username)|expiry|iat|jti|token_version . hmac-sha256
+//
+// - username em base64url evita quebra se contiver '|'
+// - expiry / iat em unix seconds
+// - jti: identificador único (permite blacklist futura)
+// - token_version: invalidação em massa (troca de senha / logout)
+//
+// Nunca logue o token completo — só o jti ou um prefixo curto se precisar
+// de auditoria.
+// ---------------------------------------------------------------------------
+
+// GenerateJWT cria um token assinado para o administrador.
+// tokenVersion deve ser o valor atual de admin.token_version no banco;
+// ao incrementar esse campo (troca de senha / logout) todos os tokens
+// antigos passam a ser rejeitados por ValidateJWT + checagem no caller.
+func GenerateJWT(username string, tokenVersion int64) string {
+	now := time.Now().UTC()
+	expiry := now.Add(AdminTokenTTL).Unix()
+	iat := now.Unix()
+	jti := randomHex(16)
+
+	// username em base64url para não quebrar o split por '|'
+	uEnc := base64.RawURLEncoding.EncodeToString([]byte(username))
+	payload := fmt.Sprintf("%s|%d|%d|%s|%d", uEnc, expiry, iat, jti, tokenVersion)
 	sig := signPayload(payload)
-	return payload + "|" + sig
+	return payload + "." + sig
 }
 
 func signPayload(payload string) string {
@@ -165,26 +199,67 @@ func signPayload(payload string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// ValidateJWT verifies the signature and expiry of a token and returns the
-// embedded username when valid.
-func ValidateJWT(token string) (string, bool) {
-	parts := strings.SplitN(token, "|", 3)
-	if len(parts) != 3 {
-		return "", false
+// ValidateJWT verifica assinatura e expiração.
+// Retorna username, tokenVersion e ok.
+// O caller DEVE comparar tokenVersion com o valor atual no banco
+// (admin.token_version) para invalidar sessões após troca de senha/logout.
+//
+// Nunca logue o token completo aqui.
+func ValidateJWT(token string) (username string, tokenVersion int64, ok bool) {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return "", 0, false
 	}
-	username := parts[0]
-	expiryStr := parts[1]
-	sig := parts[2]
-	payload := username + "|" + expiryStr
+	payload, sig := parts[0], parts[1]
+
 	expectedSig := signPayload(payload)
 	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
-		return "", false
+		return "", 0, false
 	}
-	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
-	if err != nil || time.Now().Unix() > expiry {
-		return "", false
+
+	fields := strings.SplitN(payload, "|", 5)
+	if len(fields) != 5 {
+		return "", 0, false
 	}
-	return username, true
+
+	uBytes, err := base64.RawURLEncoding.DecodeString(fields[0])
+	if err != nil || len(uBytes) == 0 {
+		return "", 0, false
+	}
+	username = string(uBytes)
+
+	expiry, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || time.Now().UTC().Unix() > expiry {
+		return "", 0, false
+	}
+
+	// iat (fields[2]) e jti (fields[3]) disponíveis para auditoria/blacklist futura
+	_ = fields[2]
+	_ = fields[3]
+
+	tokenVersion, err = strconv.ParseInt(fields[4], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+
+	return username, tokenVersion, true
+}
+
+// TokenFingerprint retorna um prefixo curto do token para logs/auditoria
+// sem expor o valor completo. Use isto em vez de logar o cookie inteiro.
+func TokenFingerprint(token string) string {
+	if len(token) <= 12 {
+		return "***"
+	}
+	return token[:8] + "…"
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("rand failed: %v", err)
+	}
+	return hex.EncodeToString(b)
 }
 
 // GenerateTemporaryPassword generates a strong temporary password:

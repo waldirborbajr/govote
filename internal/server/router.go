@@ -104,6 +104,8 @@ func Router(w http.ResponseWriter, r *http.Request) {
 		admin.HandleUIManageAdmins(w, r)
 	case r.URL.Path == "/ui/admin/manage-admins" && r.Method == http.MethodPost:
 		admin.HandleUIManageAdminsPost(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/ui/admin/logout":
+		admin.HandleAdminLogout(w, r)
 	default:
 		web.RespondError(w, http.StatusNotFound, "endpoint not found")
 	}
