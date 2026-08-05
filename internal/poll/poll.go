@@ -225,6 +225,17 @@ func CastVote(
 		}
 	}
 
+	var verifiedAt sql.NullString
+	if err := storage.DB.QueryRow(
+		`SELECT verified_at FROM voters WHERE cpf = ?`,
+		cpf,
+	).Scan(&verifiedAt); err != nil || !verifiedAt.Valid || verifiedAt.String == "" {
+		return &VoteError{
+			Status:  http.StatusUnauthorized,
+			Message: "eleitor não verificado",
+		}
+	}
+
 	var (
 		pollType  string
 		startDate string

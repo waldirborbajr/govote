@@ -1,0 +1,19 @@
+govote — pacote com as 5 melhorias críticas de segurança
+
+Estrutura:
+  cmd/govote/main.go
+  internal/api/handlers.go
+  internal/ui/handlers.go
+  internal/admin/handlers.go
+  internal/security/security.go   (+ GenerateVoterToken)
+  internal/poll/poll.go           (+ exige verified_at)
+  internal/web/middleware.go      (NOVO: headers + CSRF)
+  internal/models/models.go       (+ vote_token)
+  ...
+
+Como abrir:
+  unzip govote-completo.zip
+  cd govote
+  ls internal/
+
+NÃO é só main.go — há 18 arquivos .go no total.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/waldirborbajr/govote/internal/server"
 	"github.com/waldirborbajr/govote/internal/storage"
+	"github.com/waldirborbajr/govote/internal/web"
 )
 
 // version is set at build time via:
@@ -57,7 +58,11 @@ func run() error {
 
 	httpsSrv := &http.Server{
 		Addr:         httpsAddr,
-		Handler:      http.HandlerFunc(server.Router),
+		Handler: web.Chain(
+		http.HandlerFunc(server.Router),
+		web.SecurityHeadersMiddleware,
+		web.CSRFMiddleware,
+	),
 		ReadTimeout:  rwTimeout,
 		WriteTimeout: rwTimeout,
 		IdleTimeout:  idleTimeout,

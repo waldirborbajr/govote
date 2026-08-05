@@ -56,14 +56,18 @@ type CreatePollReq struct {
 	} `json:"answers"`
 }
 
+// VoteReq is the JSON body for POST /polls/{id}/vote.
+// VoteToken must be the short-lived token issued by POST /auth/verify
+// (or the voter_token cookie set on successful verify).
 type VoteReq struct {
 	CPF       string  `json:"cpf"`
+	VoteToken string  `json:"vote_token"`
 	AnswerIDs []int64 `json:"answer_ids"`
 }
 
 type Admin struct {
 	ID          int64  `json:"id"`
-	Username    string `json:"username"` // matches CPF for normal admins
+	Username    string `json:"username"`
 	Name        string `json:"name"`
 	Phone       string `json:"phone"`
 	IsSuper     bool   `json:"is_super"`

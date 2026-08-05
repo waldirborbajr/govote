@@ -5,7 +5,6 @@ package admin
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -90,10 +89,10 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, tempPass)
-	// Nunca logar o token JWT. TempPass só em PoC (stdout); em produção
+	
 	// o envio real via WhatsApp substitui este log.
-	fmt.Printf("[Admin Temp Password] User: %s | Phone: %s | TempPass: %s\n", username, phone, tempPass)
-
+	storage.LogAction("ADMIN_TEMP_PASSWORD_ISSUED", "user="+username)
+	
 	web.Templates.ExecuteTemplate(w, "admin_passcode_sent", web.PageData{WhatsAppURL: whatsappURL})
 }
 

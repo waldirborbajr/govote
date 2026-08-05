@@ -254,6 +254,47 @@ func TokenFingerprint(token string) string {
 	return token[:8] + "…"
 }
 
+// VoterTokenTTL is the lifetime of a post-verify voting session token.
+const VoterTokenTTL = 30 * time.Minute
+
+// GenerateVoterToken issues a short-lived signed token bound to a CPF.
+// Format: base64url(cpf)|expiry|iat|jti . hmac
+func GenerateVoterToken(cpf string) string {
+	now := time.Now().UTC()
+	expiry := now.Add(VoterTokenTTL).Unix()
+	iat := now.Unix()
+	jti := randomHex(16)
+	uEnc := base64.RawURLEncoding.EncodeToString([]byte(cpf))
+	payload := fmt.Sprintf("%s|%d|%d|%s", uEnc, expiry, iat, jti)
+	return payload + "." + signPayload(payload)
+}
+
+// ValidateVoterToken verifies signature and expiry; returns the CPF when valid.
+func ValidateVoterToken(token string) (cpf string, ok bool) {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	payload, sig := parts[0], parts[1]
+	if !hmac.Equal([]byte(sig), []byte(signPayload(payload))) {
+		return "", false
+	}
+	fields := strings.SplitN(payload, "|", 4)
+	if len(fields) != 4 {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(fields[0])
+	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	expiry, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || time.Now().UTC().Unix() > expiry {
+		return "", false
+	}
+	return string(raw), true
+}
+
+
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {

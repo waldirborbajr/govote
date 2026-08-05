@@ -17,6 +17,7 @@ type PageData struct {
 	WhatsAppURL string
 	AdminUser   *models.Admin
 	AdminsList  []models.Admin
+	CSRFToken   string
 }
 
 // Templates holds every HTMX UI fragment used by the application.
@@ -141,7 +142,8 @@ var Templates = template.Must(template.New("ui").Parse(`
   <form hx-post="/ui/admin/request-temp-password" hx-target="#app" class="bg-base-200 p-4 rounded-xl space-y-2">
     <span class="text-sm font-semibold text-gray-500 block">Solicite senha temporária via WhatsApp</span>
     <input name="phone" placeholder="(11) 98765-4321" onkeyup="formatPhone(this)" class="input input-bordered w-full" required>
-    <button class="btn btn-primary w-full">📱 Solicitar Senha Temporária</button>
+    <button class="btn btn-primary w-full"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    📱 Solicitar Senha Temporária</button>
   </form>
 
   <div class="divider">OU</div>
@@ -163,7 +165,8 @@ var Templates = template.Must(template.New("ui").Parse(`
   <form hx-post="/ui/admin/change-password" hx-target="#app" class="space-y-4">
     <input type="hidden" name="username" value="{{.AdminUser.Username}}">
     <input name="new_password" type="password" placeholder="Nova senha" minlength="8" class="input input-bordered w-full" required>
-    <button class="btn btn-warning w-full">Salvar nova senha</button>
+    <button class="btn btn-warning w-full"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    Salvar nova senha</button>
   </form>
 </div>
 {{end}}
@@ -181,7 +184,8 @@ var Templates = template.Must(template.New("ui").Parse(`
       <input name="country_code" placeholder="+55" value="+55" class="input input-bordered w-20" required>
       <input name="phone" placeholder="(11) 98765-4321" onkeyup="formatPhone(this)" class="input input-bordered w-full" required>
     </div>
-    <button class="btn btn-primary w-full">📱 Solicitar Código</button>
+    <button class="btn btn-primary w-full"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    📱 Solicitar Código</button>
   </form>
 
   <div class="divider">JÁ TENHO UM CÓDIGO</div>
@@ -197,6 +201,7 @@ var Templates = template.Must(template.New("ui").Parse(`
 {{end}}
 
 {{define "verify_form"}}
+<!-- csrf: {{.CSRFToken}} -->
 <div class="card bg-base-100 shadow-xl p-8 max-w-md mx-auto space-y-6">
   <h2 class="text-2xl font-bold text-center text-secondary">✅ Verificar Código</h2>
   {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
@@ -288,7 +293,8 @@ var Templates = template.Must(template.New("ui").Parse(`
       <span>{{.Text}}</span>
     </label>
     {{end}}
-    <button class="btn btn-primary w-full">Confirmar Voto</button>
+    <button class="btn btn-primary w-full"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    Confirmar Voto</button>
   </form>
   <button hx-get="/ui/polls?cpf={{.CPF}}" hx-target="#app" class="btn btn-ghost w-full">← Voltar às enquetes</button>
 </div>
@@ -350,7 +356,8 @@ var Templates = template.Must(template.New("ui").Parse(`
     <label class="text-sm font-semibold block">Respostas (uma por linha)</label>
     <textarea name="answers" rows="5" class="textarea textarea-bordered w-full" placeholder="Opção 1&#10;Opção 2&#10;Opção 3" required></textarea>
 
-    <button class="btn btn-primary w-full">Publicar Enquete</button>
+    <button class="btn btn-primary w-full"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    Publicar Enquete</button>
   </form>
   <button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full">← Voltar ao Painel</button>
 </div>

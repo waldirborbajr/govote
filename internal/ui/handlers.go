@@ -6,7 +6,6 @@ package ui
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -129,22 +128,30 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	passcode := security.GeneratePasscode()
 
 	if _, err := storage.DB.Exec(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at)
-		 VALUES (?, ?, ?, ?, NULL)
-		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
+		`INSERT INTO voters (cpf, name, phone, passcode, verified_at, used_at)
+		 VALUES (?, ?, ?, ?, NULL, NULL)
+		 ON CONFLICT(cpf) DO UPDATE SET
+		   passcode=excluded.passcode,
+		   name=excluded.name,
+		   phone=excluded.phone,
+		   verified_at=NULL,
+		   used_at=NULL`,
 		cpf,
 		name,
 		phone,
 		security.HashPasscode(passcode),
 	); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Erro ao gerar código."})
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Se os dados forem válidos, um código será enviado.", CSRFToken: web.EnsureCSRFToken(w, r)})
 		return
 	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, passcode)
-	fmt.Printf("[PoC] CPF %s | Phone %s | Passcode %s\n", cpf, phone, passcode)
+	storage.LogAction("PASSCODE_ISSUED", "cpf_fp="+security.TokenFingerprint(cpf))
 
-	web.Templates.ExecuteTemplate(w, "passcode_sent", web.PageData{WhatsAppURL: whatsappURL})
+	web.Templates.ExecuteTemplate(w, "passcode_sent", web.PageData{
+		WhatsAppURL: whatsappURL,
+		CSRFToken:   web.EnsureCSRFToken(w, r),
+	})
 }
 
 // HandleUIVerify handles the voter passcode verification form submission.
@@ -153,34 +160,43 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	cpf := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(r.FormValue("cpf")), ".", ""), "-", "")
 	passcode := strings.TrimSpace(r.FormValue("passcode"))
+	csrf := web.EnsureCSRFToken(w, r)
 
 	if cpf == "" || passcode == "" {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf e passcode obrigatórios"})
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf e passcode obrigatórios", CSRFToken: csrf})
 		return
 	}
 
+	const generic = "credenciais inválidas"
 	var storedHash, usedAt sql.NullString
 	err := storage.DB.QueryRow(`SELECT passcode, used_at FROM voters WHERE cpf = ?`, cpf).Scan(&storedHash, &usedAt)
-	if err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf não encontrado"})
+
+	ok := err == nil &&
+		storedHash.Valid && storedHash.String != "" &&
+		security.CheckPasscode(storedHash.String, passcode) &&
+		!(usedAt.Valid && usedAt.String != "")
+
+	if !ok {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: generic, CSRFToken: csrf})
 		return
 	}
 
-	if !storedHash.Valid || storedHash.String == "" || !security.CheckPasscode(storedHash.String, passcode) {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "código incorreto"})
-		return
-	}
-
-	if usedAt.Valid && usedAt.String != "" {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Este código já foi utilizado. Solicite um novo."})
-		return
-	}
-
+	now := time.Now().UTC().Format(time.RFC3339)
 	storage.DB.Exec(
-		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
-		time.Now().UTC().Format(time.RFC3339),
-		cpf,
+		`UPDATE voters SET passcode = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
+		now, now, cpf,
 	)
+
+	token := security.GenerateVoterToken(cpf)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "voter_token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(security.VoterTokenTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
 
 	renderUIVoterPolls(w, cpf, "")
 }
@@ -270,13 +286,26 @@ func HandleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 func HandleUIVote(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.ParseForm()
-	cpf := strings.TrimSpace(r.FormValue("cpf"))
+
+	token := ""
+	if c, err := r.Cookie("voter_token"); err == nil {
+		token = c.Value
+	}
+	tokenCPF, tokenOK := security.ValidateVoterToken(token)
+	if !tokenOK {
+		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{
+			Error:     "sessão de voto expirada — verifique o código novamente",
+			CSRFToken: web.EnsureCSRFToken(w, r),
+		})
+		return
+	}
+	cpf := tokenCPF
 
 	idStr := strings.TrimPrefix(r.URL.Path, "/ui/polls/")
 	idStr = strings.TrimSuffix(idStr, "/vote")
 	pollID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid poll id"})
+		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid poll id", CSRFToken: web.EnsureCSRFToken(w, r)})
 		return
 	}
 
@@ -285,18 +314,18 @@ func HandleUIVote(w http.ResponseWriter, r *http.Request) {
 	for _, s := range answerIDStrs {
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
-			web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid answer id"})
+			web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid answer id", CSRFToken: web.EnsureCSRFToken(w, r)})
 			return
 		}
 		answerIDs = append(answerIDs, n)
 	}
 
 	if voteErr := poll.CastVote(pollID, cpf, answerIDs); voteErr != nil {
-		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: voteErr.Message})
+		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: voteErr.Message, CSRFToken: web.EnsureCSRFToken(w, r)})
 		return
 	}
 
-	web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf})
+	web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, CSRFToken: web.EnsureCSRFToken(w, r)})
 }
 
 // HandleUIGlobalStats renders the global statistics dashboard fragment.

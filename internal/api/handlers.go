@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -81,25 +80,28 @@ func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 
 	passcode := security.GeneratePasscode()
 
+	whatsappURL := ""
 	if _, err := storage.DB.Exec(
-		`INSERT INTO voters (cpf, name, phone, passcode, verified_at)
-		 VALUES (?, ?, ?, ?, NULL)
-		 ON CONFLICT(cpf) DO UPDATE SET passcode=excluded.passcode`,
+		`INSERT INTO voters (cpf, name, phone, passcode, verified_at, used_at)
+		 VALUES (?, ?, ?, ?, NULL, NULL)
+		 ON CONFLICT(cpf) DO UPDATE SET
+		   passcode=excluded.passcode,
+		   name=excluded.name,
+		   phone=excluded.phone,
+		   verified_at=NULL,
+		   used_at=NULL`,
 		req.CPF,
 		req.Name,
 		req.Phone,
 		security.HashPasscode(passcode),
-	); err != nil {
-		web.RespondError(w, http.StatusInternalServerError, "db error")
-		return
+	); err == nil {
+		whatsappURL = notify.BuildWhatsAppURL(req.Phone, passcode)
+		storage.LogAction("PASSCODE_ISSUED", "cpf_fp="+security.TokenFingerprint(req.CPF))
 	}
-
-	whatsappURL := notify.BuildWhatsAppURL(req.Phone, passcode)
-	fmt.Printf("[PoC] CPF %s passcode: %s\n", req.CPF, passcode)
-
+	// Nunca logar o passcode. Resposta uniforme (anti-enumeração de erros internos).
 	web.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"message":      "Se os dados forem válidos, um código será enviado.",
 		"whatsapp_url": whatsappURL,
-		"message":      "Código gerado com sucesso!",
 	})
 }
 
@@ -122,33 +124,49 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 	req.CPF = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.CPF), ".", ""), "-", "")
 	req.Passcode = strings.TrimSpace(req.Passcode)
 
+	const genericAuthErr = "credenciais inválidas"
+
 	var storedHash, usedAt sql.NullString
 	err := storage.DB.QueryRow(
 		`SELECT passcode, used_at FROM voters WHERE cpf = ?`,
 		req.CPF,
 	).Scan(&storedHash, &usedAt)
-	if err != nil {
-		web.RespondError(w, http.StatusUnauthorized, "cpf not found")
+
+	ok := err == nil &&
+		storedHash.Valid && storedHash.String != "" &&
+		security.CheckPasscode(storedHash.String, req.Passcode) &&
+		!(usedAt.Valid && usedAt.String != "")
+
+	if !ok {
+		// Resposta uniforme — não distingue CPF inexistente, passcode errado ou já usado.
+		web.RespondError(w, http.StatusUnauthorized, genericAuthErr)
 		return
 	}
 
-	if !storedHash.Valid || storedHash.String == "" || !security.CheckPasscode(storedHash.String, req.Passcode) {
-		web.RespondError(w, http.StatusUnauthorized, "wrong passcode")
-		return
-	}
-
-	if usedAt.Valid && usedAt.String != "" {
-		web.RespondError(w, http.StatusUnauthorized, "este código já foi utilizado. Solicite um novo.")
-		return
-	}
-
+	now := time.Now().UTC().Format(time.RFC3339)
 	storage.DB.Exec(
-		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
-		time.Now().UTC().Format(time.RFC3339),
+		`UPDATE voters SET passcode = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
+		now,
+		now,
 		req.CPF,
 	)
 
-	web.RespondJSON(w, http.StatusOK, map[string]interface{}{"verified": true, "cpf": req.CPF})
+	token := security.GenerateVoterToken(req.CPF)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "voter_token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(security.VoterTokenTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	web.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"verified":   true,
+		"cpf":        req.CPF,
+		"vote_token": token,
+	})
 }
 
 // HandleListPolls returns the currently active polls with their answers.
@@ -361,6 +379,18 @@ func HandleVote(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.AnswerIDs) > 20 {
 		web.RespondError(w, http.StatusBadRequest, "máximo de 20 respostas")
+		return
+	}
+
+	token := req.VoteToken
+	if token == "" {
+		if c, err := r.Cookie("voter_token"); err == nil {
+			token = c.Value
+		}
+	}
+	tokenCPF, tokenOK := security.ValidateVoterToken(token)
+	if !tokenOK || tokenCPF != req.CPF {
+		web.RespondError(w, http.StatusUnauthorized, "voto requer autenticação (verifique o código primeiro)")
 		return
 	}
 
