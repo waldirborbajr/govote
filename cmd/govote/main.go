@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,33 +19,48 @@ import (
 	"github.com/waldirborbajr/govote/internal/storage"
 )
 
-const version = ""
+// version is set at build time via:
+//   -ldflags "-X main.version=1.2.3"
+var version = "dev"
+
+const (
+	httpAddr        = ":9080"
+	httpsAddr       = ":8443"
+	rwTimeout       = 30 * time.Second
+	idleTimeout     = 60 * time.Second
+	shutdownTimeout = 30 * time.Second
+)
 
 func main() {
-	db := storage.MustOpen("votes.db")
-	defer db.Close()
+	if err := run(); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+}
 
+func run() error {
+	db := storage.MustOpen("votes.db")
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("⚠️  erro ao fechar banco de dados: %v", err)
+		}
+	}()
+
+	// Se InitDB precisar da conexão aberta acima, use: storage.InitDB(db)
 	if err := storage.InitDB(); err != nil {
-		log.Fatalf("init db failed: %v", err)
+		return fmt.Errorf("init db falhou: %w", err)
 	}
 
 	cert, err := server.EnsureSelfSignedCert()
 	if err != nil {
-		log.Fatalf("falha ao preparar certificado TLS: %v", err)
+		return fmt.Errorf("falha ao preparar certificado TLS: %w", err)
 	}
-
-	const (
-		httpAddr  = ":9080"
-		httpsAddr = ":8443"
-		httpsPort = ":8443" // usado para montar a URL de redirecionamento
-	)
 
 	httpsSrv := &http.Server{
 		Addr:         httpsAddr,
 		Handler:      http.HandlerFunc(server.Router),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  rwTimeout,
+		WriteTimeout: rwTimeout,
+		IdleTimeout:  idleTimeout,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
@@ -62,20 +78,23 @@ func main() {
 				_, _ = w.Write([]byte(`{"status":"ok","version":"` + version + `"}`))
 				return
 			}
-			server.HTTPSRedirectHandler(httpsPort)(w, r)
+			server.HTTPSRedirectHandler(httpsAddr)(w, r)
 		}),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  rwTimeout,
+		WriteTimeout: rwTimeout,
+		IdleTimeout:  idleTimeout,
 	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(stop)
+
+	errCh := make(chan error, 2)
 
 	go func() {
 		fmt.Println("🔒 Vote API (HTTPS) iniciada em https://localhost" + httpsAddr)
-		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Erro no servidor HTTPS: %v", err)
+		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("servidor HTTPS: %w", err)
 		}
 	}()
 
@@ -83,15 +102,19 @@ func main() {
 		fmt.Println("↪️  Redirecionador HTTP → HTTPS em http://localhost" + httpAddr)
 		fmt.Println("   /health disponível em HTTP (sem redirect) para probes.")
 		fmt.Println("   Pressione Ctrl+C para encerrar gracefulmente.")
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Erro no servidor HTTP: %v", err)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("servidor HTTP: %w", err)
 		}
 	}()
 
-	<-stop
-	fmt.Println("\n\n🛑 Sinal de shutdown recebido. Iniciando encerramento graceful...")
+	select {
+	case <-stop:
+		fmt.Println("\n\n🛑 Sinal de shutdown recebido. Iniciando encerramento graceful...")
+	case err := <-errCh:
+		log.Printf("❌ erro em um dos servidores, iniciando encerramento graceful: %v", err)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := httpSrv.Shutdown(ctx); err != nil {
@@ -100,7 +123,7 @@ func main() {
 	if err := httpsSrv.Shutdown(ctx); err != nil {
 		log.Printf("⚠️  Erro durante shutdown do servidor HTTPS: %v", err)
 	}
-	fmt.Println("✅ Servidores encerrados com sucesso (todas as sessões ativas foram finalizadas)")
 
-	fmt.Println("💾 Banco de dados fechado.")
+	fmt.Println("✅ Servidores encerrados com sucesso (todas as sessões ativas foram finalizadas)")
+	return nil
 }
