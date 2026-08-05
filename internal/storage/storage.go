@@ -1,15 +1,15 @@
 // storage.go
 //
 // This package uses only database/sql with the pure-Go modernc.org/sqlite
-// driver (no CGO, no external sqinn process). Every query in the codebase
-// must go through storage.DB using the standard database/sql API
-// (DB.Query / DB.QueryRow / DB.Exec), never the sqinn-go API.
+// driver (no CGO). Every query must go through storage.DB.
 package storage
 
 import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,10 +18,7 @@ import (
 // DB is the shared database handle. It is nil until MustOpen has been called.
 var DB *sql.DB
 
-// MustOpen opens (or creates) the SQLite database at path using the pure-Go
-// modernc.org/sqlite driver, verifies the connection with Ping, stores the
-// handle in DB and returns it. It exits the process via log.Fatalf if the
-// database cannot be opened or reached.
+// MustOpen opens (or creates) the SQLite database at path.
 func MustOpen(path string) *sql.DB {
 	var err error
 
@@ -30,26 +27,31 @@ func MustOpen(path string) *sql.DB {
 		log.Fatalf("failed opening database: %v", err)
 	}
 
+	// Reasonable defaults for concurrent request handlers.
+	DB.SetMaxOpenConns(1) // SQLite: single writer
+	DB.SetMaxIdleConns(1)
+	DB.SetConnMaxLifetime(0)
+
 	if err := DB.Ping(); err != nil {
 		log.Fatalf("failed connecting database: %v", err)
 	}
 
 	log.Printf("SQLite database opened at %s", path)
-
 	return DB
 }
 
-// InitDB creates the schema (tables) if they don't exist yet. MustOpen must
-// be called first so DB is set.
+// InitDB creates the schema and bootstraps the super-admin when the table is empty.
 func InitDB() error {
 	if DB == nil {
 		return fmt.Errorf("storage: InitDB called before MustOpen")
 	}
-	return createTables()
+	if err := createTables(); err != nil {
+		return err
+	}
+	return bootstrapSuperAdmin()
 }
 
-// BoolToInt converts a bool to the 0/1 representation used for SQLite
-// INTEGER columns that store booleans (allow_blank, is_super, enabled, ...).
+// BoolToInt converts a bool to the 0/1 representation used for SQLite INTEGER booleans.
 func BoolToInt(b bool) int64 {
 	if b {
 		return 1
@@ -57,12 +59,24 @@ func BoolToInt(b bool) int64 {
 	return 0
 }
 
-// LogAction writes a lightweight audit-trail entry to the standard logger.
-// This is a PoC-level audit log (stdout/stderr), not a persisted table; swap
-// this out for a real audit_log table + INSERT if/when durability across
-// restarts is required.
+// LogAction writes an audit entry to stdout and to the persistent audit_log table.
 func LogAction(action, detail string) {
-	log.Printf("[AUDIT] %s | action=%s | %s", time.Now().UTC().Format(time.RFC3339), action, detail)
+	LogActionIP(action, detail, "")
+}
+
+// LogActionIP is LogAction with an optional client IP.
+func LogActionIP(action, detail, ip string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	log.Printf("[AUDIT] %s | action=%s | ip=%s | %s", now, action, ip, detail)
+	if DB == nil {
+		return
+	}
+	if _, err := DB.Exec(
+		`INSERT INTO audit_log (at, action, detail, ip) VALUES (?, ?, ?, ?)`,
+		now, action, detail, ip,
+	); err != nil {
+		log.Printf("⚠️  falha ao gravar audit_log: %v", err)
+	}
 }
 
 func createTables() error {
@@ -117,6 +131,23 @@ CREATE TABLE IF NOT EXISTS votes (
 	voted_at   TEXT,
 	UNIQUE(poll_id, voter_hash)
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+	id     INTEGER PRIMARY KEY AUTOINCREMENT,
+	at     TEXT NOT NULL,
+	action TEXT NOT NULL,
+	detail TEXT,
+	ip     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_lockout (
+	key         TEXT PRIMARY KEY,
+	fail_count  INTEGER NOT NULL DEFAULT 0,
+	locked_until TEXT,
+	updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log(at);
 `
 
 	if _, err := DB.Exec(schema); err != nil {
@@ -124,5 +155,53 @@ CREATE TABLE IF NOT EXISTS votes (
 	}
 
 	log.Println("SQLite schema ready")
+	return nil
+}
+
+// bootstrapSuperAdmin creates the initial super-admin when the admin table is empty.
+// Credentials:
+//
+//	GOVOTE_BOOTSTRAP_USERNAME (default: "super")
+//	GOVOTE_BOOTSTRAP_PHONE    (required — E.164, e.g. +5511999999999)
+//	GOVOTE_BOOTSTRAP_NAME     (optional)
+//
+// No password is set. Login is only via temporary OTP (needs_change=1).
+// If the table already has any admin, this is a no-op.
+func bootstrapSuperAdmin() error {
+	var n int64
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM admin`).Scan(&n); err != nil {
+		return fmt.Errorf("bootstrap count: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+
+	phone := strings.TrimSpace(os.Getenv("GOVOTE_BOOTSTRAP_PHONE"))
+	if phone == "" {
+		log.Println("⚠️  Nenhum admin no banco e GOVOTE_BOOTSTRAP_PHONE não definida — super-admin NÃO criado. Defina o telefone e reinicie, ou crie o admin manualmente.")
+		return nil
+	}
+
+	username := strings.TrimSpace(os.Getenv("GOVOTE_BOOTSTRAP_USERNAME"))
+	if username == "" {
+		username = "super"
+	}
+	name := strings.TrimSpace(os.Getenv("GOVOTE_BOOTSTRAP_NAME"))
+	if name == "" {
+		name = "Super Admin"
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := DB.Exec(
+		`INSERT INTO admin (username, name, phone, password_hash, passcode, needs_change, is_super, enabled, token_version, created_at)
+		 VALUES (?, ?, ?, NULL, NULL, 1, 1, 1, 0, ?)`,
+		username, name, phone, now,
+	)
+	if err != nil {
+		return fmt.Errorf("bootstrap super-admin: %w", err)
+	}
+
+	LogAction("BOOTSTRAP_SUPER_ADMIN", "username="+username+" phone="+phone)
+	log.Printf("✅ Super-admin bootstrap criado: username=%s phone=%s (sem senha — use OTP/senha temporária e defina senha no primeiro acesso)", username, phone)
 	return nil
 }

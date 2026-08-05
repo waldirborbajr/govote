@@ -167,6 +167,15 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lockKey := storage.LockoutKeyCPF(cpf)
+	if locked, remaining := storage.IsLocked(lockKey); locked {
+		web.Templates.ExecuteTemplate(w, "auth", web.PageData{
+			Error:     "Muitas tentativas. Tente novamente em " + remaining.Round(time.Second).String() + ".",
+			CSRFToken: csrf,
+		})
+		return
+	}
+
 	const generic = "credenciais inválidas"
 	var storedHash, usedAt sql.NullString
 	err := storage.DB.QueryRow(`SELECT passcode, used_at FROM voters WHERE cpf = ?`, cpf).Scan(&storedHash, &usedAt)
@@ -177,9 +186,13 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 		!(usedAt.Valid && usedAt.String != "")
 
 	if !ok {
+		storage.RecordFailure(lockKey)
+		storage.LogActionIP("VOTER_VERIFY_FAIL", "cpf_fp="+security.TokenFingerprint(cpf), web.ClientIP(r))
 		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: generic, CSRFToken: csrf})
 		return
 	}
+	storage.ClearFailures(lockKey)
+	storage.LogActionIP("VOTER_VERIFY_OK", "cpf_fp="+security.TokenFingerprint(cpf), web.ClientIP(r))
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	storage.DB.Exec(

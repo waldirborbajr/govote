@@ -107,10 +107,19 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	usernameRaw := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	ip := web.ClientIP(r)
 
 	username := usernameRaw
 	if usernameRaw != "admin" {
 		username = strings.ReplaceAll(strings.ReplaceAll(usernameRaw, ".", ""), "-", "")
+	}
+
+	lockKey := storage.LockoutKeyAdmin(username)
+	if locked, remaining := storage.IsLocked(lockKey); locked {
+		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{
+			Error: "Conta temporariamente bloqueada. Tente novamente em " + remaining.Round(time.Second).String() + ".",
+		})
+		return
 	}
 
 	var (
@@ -130,22 +139,28 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	).Scan(&id, &passwordHash, &needsChange, &isSuper, &enabled, &storedOTP, &tokenVersion)
 
 	if err != nil {
+		storage.RecordFailure(lockKey)
+		storage.LogActionIP("ADMIN_LOGIN_FAIL", "user="+username, ip)
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Credenciais inválidas"})
 		return
 	}
 
 	if enabled == 0 {
+		storage.LogActionIP("ADMIN_LOGIN_DISABLED", "user="+username, ip)
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso administrativo revogado."})
 		return
 	}
 
 	if !storedOTP.Valid || storedOTP.String == "" || !security.CheckPasscode(storedOTP.String, password) {
+		storage.RecordFailure(lockKey)
+		storage.LogActionIP("ADMIN_LOGIN_FAIL", "user="+username, ip)
 		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."})
 		return
 	}
 
-	// Limpa o passcode (uso único)
+	storage.ClearFailures(lockKey)
 	storage.DB.Exec(`UPDATE admin SET passcode = NULL WHERE id = ?`, id)
+	storage.LogActionIP("ADMIN_LOGIN_OK", "user="+username, ip)
 
 	token := security.GenerateJWT(username, tokenVersion)
 	setAdminCookie(w, token)

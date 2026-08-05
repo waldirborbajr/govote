@@ -124,6 +124,12 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 	req.CPF = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.CPF), ".", ""), "-", "")
 	req.Passcode = strings.TrimSpace(req.Passcode)
 
+	lockKey := storage.LockoutKeyCPF(req.CPF)
+	if locked, _ := storage.IsLocked(lockKey); locked {
+		web.RespondError(w, http.StatusTooManyRequests, "muitas tentativas — tente novamente mais tarde")
+		return
+	}
+
 	const genericAuthErr = "credenciais inválidas"
 
 	var storedHash, usedAt sql.NullString
@@ -138,10 +144,13 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 		!(usedAt.Valid && usedAt.String != "")
 
 	if !ok {
-		// Resposta uniforme — não distingue CPF inexistente, passcode errado ou já usado.
+		storage.RecordFailure(lockKey)
+		storage.LogActionIP("VOTER_VERIFY_FAIL", "cpf_fp="+security.TokenFingerprint(req.CPF), web.ClientIP(r))
 		web.RespondError(w, http.StatusUnauthorized, genericAuthErr)
 		return
 	}
+	storage.ClearFailures(lockKey)
+	storage.LogActionIP("VOTER_VERIFY_OK", "cpf_fp="+security.TokenFingerprint(req.CPF), web.ClientIP(r))
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	storage.DB.Exec(

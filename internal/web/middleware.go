@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -12,6 +14,8 @@ const (
 	csrfHeaderName = "X-CSRF-Token"
 	csrfFormField  = "csrf_token"
 	csrfTokenBytes = 32
+
+	defaultMaxBodyBytes = 1 << 20 // 1 MiB
 )
 
 // SecurityHeadersMiddleware sets defensive HTTP response headers on every response.
@@ -25,6 +29,58 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// LimitBodyMiddleware wraps r.Body with MaxBytesReader for every request.
+// Applies to UI form POSTs and API JSON alike.
+func LimitBodyMiddleware(next http.Handler) http.Handler {
+	max := int64(defaultMaxBodyBytes)
+	if v := os.Getenv("GOVOTE_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			max = n
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, max)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// CORSMiddleware applies an explicit Origin allowlist from GOVOTE_CORS_ORIGINS
+// (comma-separated). Empty / unset = no CORS headers (same-origin only).
+// Never reflects arbitrary Origin and never uses "*".
+func CORSMiddleware(next http.Handler) http.Handler {
+	raw := strings.TrimSpace(os.Getenv("GOVOTE_CORS_ORIGINS"))
+	allowed := map[string]struct{}{}
+	if raw != "" {
+		for _, o := range strings.Split(raw, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" && o != "*" {
+				allowed[o] = struct{}{}
+			}
+		}
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if _, ok := allowed[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Max-Age", "600")
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -109,4 +165,23 @@ func Chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler 
 		h = mws[i](h)
 	}
 	return h
+}
+
+// ClientIP returns a best-effort client IP (direct RemoteAddr; proxy headers
+// only if GOVOTE_TRUST_PROXY_HEADERS=true).
+func ClientIP(r *http.Request) string {
+	if os.Getenv("GOVOTE_TRUST_PROXY_HEADERS") == "true" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[0])
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
+		}
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	return strings.Trim(host, "[]")
 }

@@ -59,10 +59,12 @@ func run() error {
 	httpsSrv := &http.Server{
 		Addr:         httpsAddr,
 		Handler: web.Chain(
-		http.HandlerFunc(server.Router),
-		web.SecurityHeadersMiddleware,
-		web.CSRFMiddleware,
-	),
+			http.HandlerFunc(server.Router),
+			web.LimitBodyMiddleware,
+			web.CORSMiddleware,
+			web.SecurityHeadersMiddleware,
+			web.CSRFMiddleware,
+		),
 		ReadTimeout:  rwTimeout,
 		WriteTimeout: rwTimeout,
 		IdleTimeout:  idleTimeout,
