@@ -142,15 +142,13 @@ jobs:
           script: |
             set -euo pipefail
             mkdir -p "$HOME/ghdeploy/govote/data"
-            # Nota: o container roda como UID 65532 (não-root, imagem
-            # scratch), então esse diretório precisa pertencer a
-            # 65532:65532 para o SQLite conseguir escrever. Isso já foi
-            # ajustado manualmente uma vez com:
-            #   sudo chown -R 65532:65532 ~/ghdeploy/govote/data
-            # Não é automatizado aqui porque `sudo` via SSH não-interativo
-            # (appleboy/ssh-action) pede senha e falha sem um askpass
-            # helper ou entrada NOPASSWD no sudoers. Se recriar a pasta
-            # do zero, rode o chown manualmente de novo.
+            # O container roda como UID 65532 (não-root, imagem scratch).
+            # Sem isso, o SQLite falha com "unable to open database file (14)"
+            # porque o diretório pertence a $USER (ex: borba) com modo 755.
+            # Requer entrada NOPASSWD no sudoers do Pi para este comando
+            # exato (ver /etc/sudoers via `sudo visudo`), já que o SSH
+            # não-interativo não consegue responder prompt de senha.
+            sudo chown -R 65532:65532 "$HOME/ghdeploy/govote/data"
 
       - name: Copiar docker-compose.yaml para o Pi
         uses: appleboy/scp-action@v1
