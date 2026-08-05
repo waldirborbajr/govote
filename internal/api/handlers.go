@@ -6,7 +6,9 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,22 +20,64 @@ import (
 	"github.com/waldirborbajr/govote/internal/poll"
 	"github.com/waldirborbajr/govote/internal/security"
 	"github.com/waldirborbajr/govote/internal/storage"
+	"github.com/waldirborbajr/govote/internal/validate"
 	"github.com/waldirborbajr/govote/internal/web"
 )
+
+const maxBodyBytes = 1 << 20 // 1 MiB
+
+// decodeJSON limita o tamanho do body, rejeita campos desconhecidos e
+// garante que o JSON está bem formado (sem conteúdo extra após o objeto).
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if err == io.EOF {
+			web.RespondError(w, http.StatusBadRequest, "body vazio")
+			return false
+		}
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			web.RespondError(w, http.StatusRequestEntityTooLarge, "payload muito grande")
+			return false
+		}
+		web.RespondError(w, http.StatusBadRequest, "json inválido")
+		return false
+	}
+	// garante que não há lixo extra após o objeto principal
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		web.RespondError(w, http.StatusBadRequest, "json inválido (conteúdo extra)")
+		return false
+	}
+	return true
+}
 
 // HandleRequestPasscode generates and stores a voter passcode and returns a
 // WhatsApp deep link to deliver it.
 func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	var req models.RequestPasscodeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		web.RespondError(w, http.StatusBadRequest, "invalid request")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
-	if strings.TrimSpace(req.CPF) == "" || strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Phone) == "" {
-		web.RespondError(w, http.StatusBadRequest, "cpf, name, phone required")
+	if err := validate.CPF(req.CPF); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validate.Name(req.Name); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validate.Phone(req.Phone); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// normaliza antes de gravar
+	req.CPF = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.CPF), ".", ""), "-", "")
+	req.Name = strings.TrimSpace(req.Name)
+	req.Phone = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.Phone), "(", ""), ")", ""), "-", ""), " ", "")
 
 	passcode := security.GeneratePasscode()
 
@@ -62,15 +106,21 @@ func HandleRequestPasscode(w http.ResponseWriter, r *http.Request) {
 // HandleVerify validates a voter's passcode and marks it as used.
 func HandleVerify(w http.ResponseWriter, r *http.Request) {
 	var req models.VerifyReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		web.RespondError(w, http.StatusBadRequest, "invalid request")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
-	if strings.TrimSpace(req.CPF) == "" || strings.TrimSpace(req.Passcode) == "" {
-		web.RespondError(w, http.StatusBadRequest, "cpf and passcode required")
+	if err := validate.CPF(req.CPF); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validate.Passcode(req.Passcode); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	req.CPF = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.CPF), ".", ""), "-", "")
+	req.Passcode = strings.TrimSpace(req.Passcode)
 
 	var storedHash, usedAt sql.NullString
 	err := storage.DB.QueryRow(
@@ -205,15 +255,44 @@ func HandleCreatePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.CreatePollReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		web.RespondError(w, http.StatusBadRequest, "invalid request")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
-	if strings.TrimSpace(req.Title) == "" || (req.Type != "radio" && req.Type != "checkbox") || len(req.Answers) == 0 {
-		web.RespondError(w, http.StatusBadRequest, "title, type (radio/checkbox), and answers required")
+	if err := validate.PollTitle(req.Title); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validate.PollType(req.Type); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	start, err := validate.RFC3339Date(req.StartDate, "start_date")
+	if err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	end, err := validate.RFC3339Date(req.EndDate, "end_date")
+	if err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !end.After(start) {
+		web.RespondError(w, http.StatusBadRequest, "end_date deve ser posterior a start_date")
+		return
+	}
+
+	texts := make([]string, 0, len(req.Answers))
+	for _, a := range req.Answers {
+		texts = append(texts, a.Text)
+	}
+	if err := validate.AnswerTexts(texts); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	req.Title = strings.TrimSpace(req.Title)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -266,8 +345,22 @@ func HandleVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.VoteReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		web.RespondError(w, http.StatusBadRequest, "invalid request")
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if err := validate.CPF(req.CPF); err != nil {
+		web.RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.CPF = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.CPF), ".", ""), "-", "")
+
+	if len(req.AnswerIDs) == 0 {
+		web.RespondError(w, http.StatusBadRequest, "answer_ids required")
+		return
+	}
+	if len(req.AnswerIDs) > 20 {
+		web.RespondError(w, http.StatusBadRequest, "máximo de 20 respostas")
 		return
 	}
 

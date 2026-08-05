@@ -37,7 +37,9 @@ services:
       # (nginx, Caddy, Traefik, Cloudflare etc.) que sobrescreve
       # X-Forwarded-For/X-Real-IP. Caso contrário, o rate limiter pode ser
       # burlado forjando esses headers.
-      - GOVOTE_TRUST_PROXY_HEADERS=false
       # Usado só para calcular turnout_pct em /admin/stats. Ainda não vem de
       # uma fonte real de eleitores elegíveis — ver TODO no PR.
       - GOVOTE_TOTAL_ELIGIBLE_VOTERS=1000
+      - GOVOTE_RATE_LIMIT_MAX=10
+      - GOVOTE_RATE_LIMIT_WINDOW_SEC=60
+      - GOVOTE_TRUST_PROXY_HEADERS=false   # true só atrás de proxy confiável
