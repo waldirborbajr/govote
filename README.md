@@ -294,12 +294,59 @@ curl http://localhost:8080/polls/1/results
 
 ---
 
+## n8n / Telegram Integration
+
+Telegram é um **canal adicional** de entrega de passcode — não substitui nem
+desativa o WhatsApp. `/auth/request-passcode` (WhatsApp) continua existindo
+e funcionando exatamente como antes; um mesmo CPF pode pedir código por
+qualquer um dos dois canais, em momentos diferentes, sem que um sobrescreva
+os dados do outro (o telefone salvo só é atualizado se o pedido via Telegram
+informar um novo, e o `chat_id` do Telegram nunca é tocado pelo fluxo do
+WhatsApp).
+
+**POST** `/integrations/telegram/request-code`
+
+Service-to-service endpoint for a Telegram bot run from n8n. Requires the
+`X-API-Key` header matching `GOVOTE_N8N_API_KEY` (set on the server; the
+endpoint is disabled if that env var is empty). Unlike
+`/auth/request-passcode`, it returns the plaintext passcode instead of a
+WhatsApp link, since delivery happens via a `sendMessage` call to the
+Telegram Bot API from the n8n workflow.
+
+```bash
+curl -X POST https://rasplab:8443/integrations/telegram/request-code \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $GOVOTE_N8N_API_KEY" \
+  -d '{
+    "cpf": "12345678901",
+    "name": "João Silva",
+    "chat_id": "123456789"
+  }'
+```
+
+Response:
+```json
+{
+  "cpf": "12345678901",
+  "passcode": "3456",
+  "expires_at": "2026-08-06T21:10:00Z"
+}
+```
+
+The rest of the voting flow uses the existing public endpoints as-is —
+`POST /auth/verify` (cpf + passcode → `vote_token`), `GET /polls`,
+`POST /polls/{id}/vote`, `GET /polls/{id}/results` — so the n8n workflow only
+needs the one extra call above to hand out codes over Telegram instead of
+WhatsApp.
+
+---
+
 ## Database
 
 SQLite database is stored as `votes.db` in the working directory.
 
 Tables:
-- **voters** — CPF, name, phone, passcode, verified_at
+- **voters** — CPF, name, phone, telegram_chat_id, passcode, verified_at
 - **polls** — Poll metadata (title, type, dates)
 - **answers** — Poll answers with display order
 - **votes** — Vote records (enforces CPF uniqueness per poll via UNIQUE constraint)

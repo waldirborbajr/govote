@@ -56,6 +56,10 @@ services:
       # Limite de body (UI forms + API). Default 1MiB.
       - GOVOTE_MAX_BODY_BYTES=1048576
       - GOVOTE_PASSCODE_TTL_MINUTES=10
+      # Chave para o n8n chamar /integrations/telegram/request-code
+      # (header X-API-Key). Vazio = endpoint desabilitado. Gere com:
+      # openssl rand -hex 32
+      - GOVOTE_N8N_API_KEY=${GOVOTE_N8N_API_KEY:-}
       # production|prod → exige secrets ≥ 32 bytes no boot
       - GOVOTE_ENV=${GOVOTE_ENV:-production}
       - GOVOTE_REQUIRE_SECRETS=${GOVOTE_REQUIRE_SECRETS:-true}

@@ -162,6 +162,27 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// RequireServiceAPIKey gates service-to-service integration endpoints (e.g.
+// n8n/Telegram bot) behind a shared secret read from GOVOTE_N8N_API_KEY.
+// The caller must send it in the "X-API-Key" header. If the env var is not
+// set, the integration is considered disabled and every request is rejected
+// (fail closed) — there is no insecure dev fallback here, unlike jwtSecret.
+func RequireServiceAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		expected := os.Getenv("GOVOTE_N8N_API_KEY")
+		if expected == "" {
+			RespondError(w, http.StatusServiceUnavailable, "integração não configurada")
+			return
+		}
+		provided := r.Header.Get("X-API-Key")
+		if provided == "" || !subtleConstantTimeEq(provided, expected) {
+			RespondError(w, http.StatusUnauthorized, "chave de API inválida")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
 // Chain applies middlewares in order (first is outermost).
 func Chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler {
 	for i := len(mws) - 1; i >= 0; i-- {

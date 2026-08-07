@@ -99,6 +99,23 @@ func Phone(phone string) error {
 	return nil
 }
 
+// TelegramChatID aceita o chat_id numérico do Telegram (pode ser negativo
+// para grupos/canais).
+func TelegramChatID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("chat_id é obrigatório")
+	}
+	n := id
+	if strings.HasPrefix(n, "-") {
+		n = n[1:]
+	}
+	if n == "" || !reDigitsOnly.MatchString(n) {
+		return fmt.Errorf("chat_id inválido")
+	}
+	return nil
+}
+
 // Passcode exige exatamente 4 dígitos.
 func Passcode(code string) error {
 	code = strings.TrimSpace(code)

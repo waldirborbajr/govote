@@ -45,6 +45,18 @@ type VerifyReq struct {
 	Passcode string `json:"passcode"`
 }
 
+// TelegramRequestCodeReq is the JSON body for
+// POST /integrations/telegram/request-code (service-to-service, requires
+// X-API-Key). Unlike RequestPasscodeReq, ChatID identifies the Telegram chat
+// the bot (n8n) is talking to, and the response carries the plaintext
+// passcode so the bot can deliver it — no phone/WhatsApp involved.
+type TelegramRequestCodeReq struct {
+	CPF    string `json:"cpf"`
+	Name   string `json:"name"`
+	Phone  string `json:"phone"`
+	ChatID string `json:"chat_id"`
+}
+
 type CreatePollReq struct {
 	Title      string `json:"title"`
 	Type       string `json:"type"`

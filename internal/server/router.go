@@ -26,6 +26,8 @@ func Router(w http.ResponseWriter, r *http.Request) {
 		web.RateLimitMiddleware(api.HandleRequestPasscode)(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/auth/verify":
 		web.RateLimitMiddleware(api.HandleVerify)(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/integrations/telegram/request-code":
+		web.RateLimitMiddleware(web.RequireServiceAPIKey(api.HandleTelegramRequestCode))(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/polls":
 		api.HandleListPolls(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/polls":

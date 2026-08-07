@@ -155,6 +155,16 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log(at);
 		return fmt.Errorf("database migration error: %w", err)
 	}
 
+	// Migração incremental: telegram_chat_id foi adicionado após o schema
+	// inicial, então bancos existentes precisam de ALTER TABLE. SQLite não
+	// suporta "ADD COLUMN IF NOT EXISTS", então tentamos e ignoramos o erro
+	// de coluna duplicada (banco já migrado).
+	if _, err := DB.Exec(`ALTER TABLE voters ADD COLUMN telegram_chat_id TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migration error (telegram_chat_id): %w", err)
+		}
+	}
+
 	log.Println("SQLite schema ready")
 	return nil
 }
