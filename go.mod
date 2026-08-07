@@ -3,7 +3,7 @@ module github.com/waldirborbajr/govote
 go 1.25.0
 
 require (
-	github.com/redis/go-redis/v9 v9.7.0
+	github.com/redis/go-redis/v9 v9.7.3
 	golang.org/x/crypto v0.54.0
 	modernc.org/sqlite v1.54.0
 )
