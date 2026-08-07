@@ -15,10 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/waldirborbajr/govote/internal/cache"
 	"github.com/waldirborbajr/govote/internal/server"
 	"github.com/waldirborbajr/govote/internal/security"
 	"github.com/waldirborbajr/govote/internal/storage"
 	"github.com/waldirborbajr/govote/internal/web"
+	"github.com/waldirborbajr/govote/internal/worker"
 )
 
 // version is set at build time via:
@@ -53,6 +55,22 @@ func run() error {
 	}
 
 	security.MustValidateSecrets()
+	cache.Init()
+	defer cache.Close()
+
+	// Dedicated vote-worker mode: consume Redis stream and write SQLite only.
+	if os.Getenv("GOVOTE_VOTE_WORKER") == "true" {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+		go worker.RunVoteWorker(ctx)
+		log.Println("🛠️  Modo VOTE_WORKER ativo (sem HTTP)")
+		<-stop
+		cancel()
+		time.Sleep(500 * time.Millisecond)
+		return nil
+	}
 
 	cert, err := server.EnsureSelfSignedCert()
 	if err != nil {

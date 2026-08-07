@@ -1,0 +1,109 @@
+# Black Friday stack: Nginx + Redis + 3x govote API + vote-worker (SQLite writer)
+# Uso:
+#   cp .env.bf.example .env
+#   docker compose -f docker-compose.bf.yml up -d --build
+#
+# Entrada pública: http://localhost:8080  (Nginx)
+# API direta (debug): 9081/9082/9083
+
+x-govote-common: &govote-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &govote-env
+    TZ: America/Sao_Paulo
+    GOMEMLIMIT: 200MiB
+    GOVOTE_JWT_SECRET: ${GOVOTE_JWT_SECRET:-bf-jwt-secret-32chars-minimum-ok!!}
+    GOVOTE_CPF_PEPPER: ${GOVOTE_CPF_PEPPER:-bf-cpf-pepper-32chars-minimum-ok!!}
+    GOVOTE_REDIS_URL: redis://redis:6379/0
+    GOVOTE_VOTE_ASYNC: "true"
+    GOVOTE_RATE_LIMIT_MAX: ${GOVOTE_RATE_LIMIT_MAX:-200}
+    GOVOTE_RATE_LIMIT_WINDOW_SEC: ${GOVOTE_RATE_LIMIT_WINDOW_SEC:-60}
+    GOVOTE_TRUST_PROXY_HEADERS: "true"
+    GOVOTE_TOTAL_ELIGIBLE_VOTERS: ${GOVOTE_TOTAL_ELIGIBLE_VOTERS:-50000}
+    GOVOTE_LOCKOUT_MAX_FAILURES: "20"
+    GOVOTE_ENV: production
+    GOVOTE_REQUIRE_SECRETS: "true"
+    GOVOTE_PASSCODE_TTL_MINUTES: "30"
+    GOVOTE_N8N_API_KEY: ${GOVOTE_N8N_API_KEY:-}
+  volumes:
+    - ./data:/data
+  depends_on:
+    redis:
+      condition: service_healthy
+  mem_limit: 256m
+  cpus: "1.0"
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: govote-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  govote-1:
+    <<: *govote-common
+    container_name: govote-1
+    ports:
+      - "9081:9080"
+    healthcheck: &hc
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  govote-2:
+    <<: *govote-common
+    container_name: govote-2
+    ports:
+      - "9082:9080"
+    healthcheck: *hc
+
+  govote-3:
+    <<: *govote-common
+    container_name: govote-3
+    ports:
+      - "9083:9080"
+    healthcheck: *hc
+
+  # Único escritor da fila de votos → SQLite
+  vote-worker:
+    <<: *govote-common
+    container_name: govote-vote-worker
+    environment:
+      <<: *govote-env
+      GOVOTE_VOTE_WORKER: "true"
+      GOVOTE_VOTE_ASYNC: "true"
+    ports: []
+    healthcheck:
+      disable: true
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: govote-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      govote-1:
+        condition: service_healthy
+      govote-2:
+        condition: service_healthy
+      govote-3:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis-data:

@@ -8,7 +8,7 @@
 # Actions), mesmo que o alvo final seja arm64 (Raspberry Pi). O Go faz
 # cross-compile de verdade (não precisa executar código arm64), então
 # isso evita emulação via QEMU no CI — build bem mais rápido.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 # Preenchidos automaticamente pelo buildx a partir de --platform na hora
 # do `docker buildx build` (ex.: TARGETOS=linux TARGETARCH=arm64).
