@@ -5,14 +5,14 @@
  *   warm-up → carga normal → pico → stress máximo → ramp-down
  *
  * Variáveis de ambiente:
- *   BASE_URL  (default: http://localhost:9080)
+ *   BASE_URL  (default: http://localhost:8080)
  *   POLL_ID   (default: 1)
  */
 import http from 'k6/http';
 import { check, sleep, group } from 'k6';
 import { Rate, Trend, Counter } from 'k6/metrics';
 
-const BASE = __ENV.BASE_URL || 'http://localhost:9080';
+const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const POLL_ID = __ENV.POLL_ID || '1';
 
 const errorRate = new Rate('errors');

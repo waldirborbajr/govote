@@ -6,7 +6,7 @@ import http from 'k6/http';
 import { check, sleep, group } from 'k6';
 import { Rate, Trend, Counter } from 'k6/metrics';
 
-const BASE = __ENV.BASE_URL || 'http://localhost:9080';
+const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 
 const errorRate = new Rate('errors');
 const authLatency = new Trend('auth_latency', true);

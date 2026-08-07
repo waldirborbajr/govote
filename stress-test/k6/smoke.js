@@ -5,7 +5,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const BASE = __ENV.BASE_URL || 'http://localhost:9080';
+const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const POLL_ID = __ENV.POLL_ID || '1';
 
 export const options = {

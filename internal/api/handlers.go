@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/waldirborbajr/govote/internal/cache"
 	"github.com/waldirborbajr/govote/internal/models"
 	"github.com/waldirborbajr/govote/internal/notify"
 	"github.com/waldirborbajr/govote/internal/poll"
@@ -193,6 +194,12 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 
 // HandleListPolls returns the currently active polls with their answers.
 func HandleListPolls(w http.ResponseWriter, r *http.Request) {
+	var polls []models.Poll
+	if cache.GetJSON("polls:active", &polls) {
+		web.RespondJSON(w, http.StatusOK, polls)
+		return
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	rows, err := storage.DB.Query(
@@ -208,7 +215,6 @@ func HandleListPolls(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var polls []models.Poll
 	for rows.Next() {
 		var p models.Poll
 		if err := rows.Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedBy, &p.CreatedAt); err != nil {
@@ -228,6 +234,7 @@ func HandleListPolls(w http.ResponseWriter, r *http.Request) {
 	if polls == nil {
 		polls = []models.Poll{}
 	}
+	cache.SetJSON("polls:active", polls, 15*time.Second)
 	web.RespondJSON(w, http.StatusOK, polls)
 }
 
@@ -416,11 +423,36 @@ func HandleVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	voterHash := security.HashCPF(req.CPF)
+	if cache.HasVoted(pollID, voterHash) {
+		web.RespondError(w, http.StatusConflict, "cpf already voted")
+		return
+	}
+
+	// Async path: enqueue to Redis Stream; dedicated worker writes to SQLite.
+	if cache.AsyncVotesEnabled() {
+		ok := cache.EnqueueVote(cache.VoteJob{
+			PollID:    pollID,
+			CPF:       req.CPF,
+			VoterHash: voterHash,
+			AnswerIDs: req.AnswerIDs,
+		})
+		if !ok {
+			web.RespondError(w, http.StatusServiceUnavailable, "fila de votos indisponível")
+			return
+		}
+		// Optimistic mark to reduce duplicate enqueues; worker is source of truth.
+		cache.MarkVoted(pollID, voterHash)
+		web.RespondJSON(w, http.StatusAccepted, map[string]any{"voted": true, "async": true})
+		return
+	}
+
 	if voteErr := poll.CastVote(pollID, req.CPF, req.AnswerIDs); voteErr != nil {
 		web.RespondError(w, voteErr.Status, voteErr.Message)
 		return
 	}
-
+	cache.MarkVoted(pollID, voterHash)
+	cache.InvalidatePoll(pollID)
 	web.RespondJSON(w, http.StatusCreated, map[string]bool{"voted": true})
 }
 
@@ -431,6 +463,13 @@ func HandleResults(w http.ResponseWriter, r *http.Request) {
 	pollID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		web.RespondError(w, http.StatusBadRequest, "invalid poll id")
+		return
+	}
+
+	cacheKey := "results:" + strconv.FormatInt(pollID, 10)
+	var cached map[string]any
+	if cache.GetJSON(cacheKey, &cached) {
+		web.RespondJSON(w, http.StatusOK, cached)
 		return
 	}
 
@@ -493,10 +532,12 @@ func HandleResults(w http.ResponseWriter, r *http.Request) {
 		notify.SimulateNotification(pollID, results)
 	}
 
-	web.RespondJSON(w, http.StatusOK, map[string]interface{}{
+	payload := map[string]interface{}{
 		"poll_id": pollID,
 		"answers": results,
-	})
+	}
+	cache.SetJSON(cacheKey, payload, 3*time.Second)
+	web.RespondJSON(w, http.StatusOK, payload)
 }
 
 // HandleAdminStats returns global voting statistics used by the dashboard.

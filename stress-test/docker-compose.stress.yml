@@ -1,0 +1,14 @@
+# Stress runners apontando para o stack BF (Nginx :8080)
+# Requer: docker compose -f docker-compose.bf.yml up -d
+services:
+  k6:
+    image: grafana/k6:latest
+    container_name: k6-bf-stress
+    network_mode: host
+    volumes:
+      - ./k6:/scripts:ro
+      - ./results:/results
+    environment:
+      - BASE_URL=${BASE_URL:-http://localhost:8080}
+      - POLL_ID=${POLL_ID:-1}
+    profiles: ["stress"]

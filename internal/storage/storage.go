@@ -22,13 +22,16 @@ var DB *sql.DB
 func MustOpen(path string) *sql.DB {
 	var err error
 
-	DB, err = sql.Open("sqlite", path)
+	// busy_timeout helps under concurrent readers/writers (WAL).
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	DB, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("failed opening database: %v", err)
 	}
 
-	// Reasonable defaults for concurrent request handlers.
-	DB.SetMaxOpenConns(1) // SQLite: single writer
+	// SQLite: single writer process is safest. With WAL, limited concurrent
+	// readers are fine; keep MaxOpenConns low to avoid lock storms.
+	DB.SetMaxOpenConns(1)
 	DB.SetMaxIdleConns(1)
 	DB.SetConnMaxLifetime(0)
 
@@ -36,7 +39,19 @@ func MustOpen(path string) *sql.DB {
 		log.Fatalf("failed connecting database: %v", err)
 	}
 
-	log.Printf("SQLite database opened at %s", path)
+	// Apply pragmas explicitly (some drivers ignore DSN pragmas).
+	for _, pr := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA temp_store=MEMORY",
+	} {
+		if _, err := DB.Exec(pr); err != nil {
+			log.Printf("⚠️  pragma %s: %v", pr, err)
+		}
+	}
+
+	log.Printf("SQLite database opened at %s (WAL mode)", path)
 	return DB
 }
 
