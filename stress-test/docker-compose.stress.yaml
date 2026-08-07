@@ -1,0 +1,68 @@
+services:
+  govote:
+    image: ghcr.io/waldirborbajr/govote:latest
+    # Alternativa: build a partir do código fonte
+    # build:
+    #   context: ../govote-main
+    #   dockerfile: Dockerfile
+    container_name: govote-stress
+    ports:
+      - "9080:9080"   # HTTP
+      - "8443:8443"   # HTTPS
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=America/Sao_Paulo
+      # Margem de memória um pouco maior para absorver picos de stress
+      - GOMEMLIMIT=200MiB
+      - GOVOTE_JWT_SECRET=${GOVOTE_JWT_SECRET:-stress-jwt-secret-32chars-minimum!!}
+      - GOVOTE_CPF_PEPPER=${GOVOTE_CPF_PEPPER:-stress-cpf-pepper-32chars-minimum!!}
+      # Rate-limit elevado para permitir carga real de teste
+      - GOVOTE_RATE_LIMIT_MAX=${GOVOTE_RATE_LIMIT_MAX:-200}
+      - GOVOTE_RATE_LIMIT_WINDOW_SEC=${GOVOTE_RATE_LIMIT_WINDOW_SEC:-60}
+      - GOVOTE_TRUST_PROXY_HEADERS=false
+      - GOVOTE_TOTAL_ELIGIBLE_VOTERS=${GOVOTE_TOTAL_ELIGIBLE_VOTERS:-50000}
+      - GOVOTE_LOCKOUT_MAX_FAILURES=${GOVOTE_LOCKOUT_MAX_FAILURES:-20}
+      - GOVOTE_LOCKOUT_MINUTES=15
+      - GOVOTE_ENV=production
+      - GOVOTE_REQUIRE_SECRETS=true
+      - GOVOTE_PASSCODE_TTL_MINUTES=30
+      - GOVOTE_MAX_BODY_BYTES=1048576
+      - GOVOTE_N8N_API_KEY=${GOVOTE_N8N_API_KEY:-}
+      - GOVOTE_CORS_ORIGINS=${GOVOTE_CORS_ORIGINS:-}
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: "2.0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  k6:
+    image: grafana/k6:latest
+    container_name: k6-stress
+    volumes:
+      - ./k6:/scripts:ro
+      - ./results:/results
+    environment:
+      - BASE_URL=http://govote:9080
+      - POLL_ID=${POLL_ID:-1}
+    depends_on:
+      govote:
+        condition: service_healthy
+    # Só sobe quando o profile "stress" é ativado
+    profiles: ["stress"]
+    # Exemplo de uso:
+    # docker compose -f docker-compose.stress.yml --profile stress run --rm k6 run /scripts/blackfriday.js
+
+  # Opcional: monitoramento rápido (descomente se quiser)
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #   ports:
+  #     - "9090:9090"
+  #   profiles: ["monitoring"]
