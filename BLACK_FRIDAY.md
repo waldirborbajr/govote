@@ -50,3 +50,15 @@ Ver `stress-test/README.md`.
 ## Plano B
 
 Se o stress mostrar contenção residual alta em writes de auth ou fila sem drenar: migrar tabela `votes` (e opcionalmente `voters`) para Postgres, mantendo o mesmo contrato de API.
+
+## Just (controle operacional)
+
+```bash
+just --list          # todas as receitas
+just bf-ready        # sobe stack + cria enquete
+just stress-bf       # carga Black Friday
+just chaos-kill      # derruba um nó e sobe de novo
+just logs / stats / health
+```
+
+Variáveis úteis: `BASE_URL`, `POLL_ID`, `NODE`, `DOWN_SECS`, `CYCLES`.

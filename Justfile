@@ -102,8 +102,12 @@ lint:
     fi
 
 # Benchmarks: just bench
-# Pacote/tempo: just bench_pkg=./internal/cache bench_time=5s bench
+# Pacote/tempo: just bench_pkg=./internal/security bench_time=5s bench
+# Nota: HashCPF/HashPassword usam Argon2 e são lentos de propósito.
 bench:
+    #!/usr/bin/env bash
+    export GOVOTE_JWT_SECRET="${GOVOTE_JWT_SECRET:-bench-jwt-secret-32chars-minimum!!}"
+    export GOVOTE_CPF_PEPPER="${GOVOTE_CPF_PEPPER:-bench-cpf-pepper-32chars-minimum!!}"
     go test {{go_flags}} -run=^$ -bench=. -benchmem -benchtime={{bench_time}} -count={{bench_count}} {{bench_pkg}}
 
 # Benchmarks só de um pacote (atalho)
