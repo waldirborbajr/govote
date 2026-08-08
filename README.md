@@ -12,10 +12,12 @@
 
 ```bash
 go mod download
-go run main.go
+templ generate ./internal/views/   # gera o código dos templates
+just build                         # ou: go build -o bin/govote ./cmd/govote
+./bin/govote
 ```
 
-Server starts on `http://localhost:8080`
+Server starts on `http://localhost:9080` (veja docker-compose / env).
 
 ---
 
@@ -373,3 +375,22 @@ Tables:
 6. ✓ **Results** — Tally votes by answer ID correctly
 7. ✓ **Single File** — All code in `main.go` (except go.mod)
 8. ✓ **Native Libs** — Stdlib only + sqinn-go exception for SQLite
+
+---
+
+## Stack de UI (confiabilidade Black Friday)
+
+A interface web utiliza a combinação:
+
+**Go → templ → HTMx**
+
+- **templ** (https://templ.guide): templates type-safe e verificados em tempo de compilação. Qualquer inconsistência de dados quebra o build, não a produção.
+- **HTMx**: interações server-driven, sem framework JS pesado. Menos superfície de falha no cliente.
+- Templates ficam em `internal/views/*.templ`. O código Go é gerado com `templ generate` (já integrado no `just build` e no Dockerfile).
+
+Para regenerar localmente:
+
+```bash
+templ generate ./internal/views/
+just build
+```

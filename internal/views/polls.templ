@@ -1,0 +1,207 @@
+package views
+
+import "fmt"
+
+templ Polls(data PageData) {
+	<div class="space-y-6">
+		if data.AdminUser != nil {
+			<h2 class="text-3xl font-bold text-center">📊 Enquetes</h2>
+		} else {
+			<h2 class="text-3xl font-bold text-center">🗳️ Enquetes Ativas</h2>
+		}
+		if data.Message != "" {
+			<div class="alert alert-success">{ data.Message }</div>
+		}
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		if len(data.Polls) == 0 {
+			<div class="alert alert-info">Nenhuma enquete disponível no momento.</div>
+		}
+		for _, p := range data.Polls {
+			<div class="card bg-base-200 shadow p-4">
+				<div class="flex justify-between items-start gap-4">
+					<div>
+						<h3 class="font-bold text-lg">{ p.Title }</h3>
+						<p class="text-sm text-base-content/70">Tipo: { p.Type } · { p.StartDate } → { p.EndDate }</p>
+					</div>
+					<div class="flex flex-col gap-2">
+						if data.AdminUser != nil {
+							<button hx-get={ fmt.Sprintf("/ui/polls/%d/results", p.ID) } hx-target="#app" class="btn btn-sm btn-accent">Resultados</button>
+						} else {
+							<button hx-get={ fmt.Sprintf("/ui/polls/%d", p.ID) } hx-target="#app" class="btn btn-sm btn-primary">Votar</button>
+						}
+					</div>
+				</div>
+			</div>
+		}
+		if data.AdminUser != nil {
+			<button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full">← Voltar ao Painel</button>
+		} else {
+			<button hx-get="/ui/voting-flow" hx-target="#app" class="btn btn-ghost w-full">← Voltar</button>
+		}
+	</div>
+}
+
+templ PollDetail(data PageData) {
+	<div class="space-y-6 max-w-lg mx-auto">
+		<h2 class="text-2xl font-bold text-center">{ data.Poll.Title }</h2>
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		<form hx-post={ fmt.Sprintf("/ui/polls/%d/vote", data.Poll.ID) } hx-target="#app" class="space-y-4">
+			<input type="hidden" name="cpf" value={ data.CPF }/>
+			<input type="hidden" name="csrf_token" value={ data.CSRFToken }/>
+			if data.Poll.Type == "checkbox" {
+				for _, a := range data.Poll.Answers {
+					<label class="flex items-center gap-3 p-3 bg-base-200 rounded-xl cursor-pointer">
+						<input type="checkbox" name="answer_ids" value={ fmt.Sprintf("%d", a.ID) } class="checkbox"/>
+						<span>{ a.Text }</span>
+					</label>
+				}
+			} else {
+				for _, a := range data.Poll.Answers {
+					<label class="flex items-center gap-3 p-3 bg-base-200 rounded-xl cursor-pointer">
+						<input type="radio" name="answer_ids" value={ fmt.Sprintf("%d", a.ID) } class="radio" required/>
+						<span>{ a.Text }</span>
+					</label>
+				}
+			}
+			if data.Poll.AllowBlank == 1 {
+				<label class="flex items-center gap-3 p-3 bg-base-200 rounded-xl cursor-pointer">
+					<input type="radio" name="answer_ids" value="0" class="radio"/>
+					<span>Voto em branco</span>
+				</label>
+			}
+			<button class="btn btn-primary w-full">Confirmar Voto</button>
+		</form>
+		<button hx-get="/ui/polls" hx-target="#app" class="btn btn-ghost w-full">← Voltar às Enquetes</button>
+	</div>
+}
+
+templ VoteResult(data PageData) {
+	<div class="card bg-base-100 shadow-xl p-8 text-center space-y-6 max-w-md mx-auto">
+		<h2 class="text-3xl font-bold text-success">✅ Voto registrado!</h2>
+		<p class="text-lg">Obrigado por participar.</p>
+		<button hx-get="/ui/polls" hx-target="#app" class="btn btn-primary w-full">Ver outras enquetes</button>
+		<button hx-get="/" hx-target="#app" class="btn btn-ghost w-full">← Início</button>
+	</div>
+}
+
+templ Results(data PageData) {
+	<div class="space-y-6">
+		<h2 class="text-2xl font-bold text-center">📊 Resultados: { data.Poll.Title }</h2>
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		<div class="space-y-2">
+			for _, r := range data.Results {
+				<div class="bg-base-200 p-4 rounded-xl flex justify-between">
+					<span>{ r.Text }</span>
+					<span class="font-bold">{ fmt.Sprintf("%d", r.Votes) }</span>
+				</div>
+			}
+		</div>
+		<button hx-get="/ui/admin/polls" hx-target="#app" class="btn btn-ghost w-full">← Voltar</button>
+	</div>
+}
+
+templ CreatePoll(data PageData) {
+	<div class="space-y-6 max-w-lg mx-auto">
+		<h2 class="text-2xl font-bold text-center">➕ Criar Nova Enquete</h2>
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		<form hx-post="/ui/polls/create" hx-target="#app" class="space-y-4">
+			<input name="title" placeholder="Título da enquete" class="input input-bordered w-full" required/>
+			<select name="type" class="select select-bordered w-full">
+				<option value="radio">Única escolha (radio)</option>
+				<option value="checkbox">Múltipla escolha (checkbox)</option>
+			</select>
+			<input name="start_date" type="datetime-local" class="input input-bordered w-full" required/>
+			<input name="end_date" type="datetime-local" class="input input-bordered w-full" required/>
+			<label class="flex items-center gap-2">
+				<input type="checkbox" name="allow_blank" value="true" class="checkbox"/>
+				<span class="text-sm">Permitir voto em branco</span>
+			</label>
+			<label class="text-sm font-semibold block">Respostas (uma por linha)</label>
+			<textarea name="answers" rows="5" class="textarea textarea-bordered w-full" placeholder="Opção 1&#10;Opção 2&#10;Opção 3" required></textarea>
+			<button class="btn btn-primary w-full">
+				<input type="hidden" name="csrf_token" value={ data.CSRFToken }/>
+				Publicar Enquete
+			</button>
+		</form>
+		<button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full">← Voltar ao Painel</button>
+	</div>
+}
+
+templ GlobalStats(data PageData) {
+	<div class="space-y-6 max-w-lg mx-auto" id="global-stats-root">
+		<h2 class="text-2xl font-bold text-center">📈 Estatísticas Globais</h2>
+		<div id="global-stats-content" class="text-center text-base-content/70">Carregando...</div>
+		<button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full">← Voltar ao Painel</button>
+	</div>
+	<script>
+		(function () {
+			fetch('/admin/stats')
+				.then(function (r) { return r.json(); })
+				.then(function (data) {
+					var el = document.getElementById('global-stats-content');
+					if (!el) return;
+					var html = '<div class="stats shadow w-full">' +
+						'<div class="stat"><div class="stat-title">Votos totais</div><div class="stat-value">' + data.total_votes + '</div></div>' +
+						'<div class="stat"><div class="stat-title">Comparecimento</div><div class="stat-value">' + data.turnout_pct.toFixed(1) + '%</div></div>' +
+						'</div>';
+					el.innerHTML = html;
+				})
+				.catch(function () {
+					var el = document.getElementById('global-stats-content');
+					if (el) el.textContent = 'Erro ao carregar estatísticas.';
+				});
+		})();
+	</script>
+}
+
+templ ManageAdmins(data PageData) {
+	<div class="space-y-6">
+		<h2 class="text-3xl font-bold text-center">👥 Gerenciar Administradores</h2>
+		if data.Message != "" {
+			<div class="alert alert-success">{ data.Message }</div>
+		}
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		<form hx-post="/ui/admin/manage-admins" hx-target="#app" class="card bg-base-200 p-6 space-y-2">
+			<span class="text-sm font-semibold text-gray-500 block">Adicionar / Atualizar Administrador</span>
+			<input name="name" placeholder="Nome completo" class="input input-bordered w-full" required/>
+			<input name="cpf" placeholder="CPF (usado como usuário)" onkeyup="formatCPF(this)" class="input input-bordered w-full" required/>
+			<input name="phone" placeholder="(11) 98765-4321" onkeyup="formatPhone(this)" class="input input-bordered w-full" required/>
+			<label class="flex items-center gap-2">
+				<input type="checkbox" name="enabled" value="true" class="checkbox" checked/>
+				<span class="text-sm">Ativo</span>
+			</label>
+			<button class="btn btn-primary w-full">Salvar</button>
+		</form>
+		<div class="space-y-2">
+			for _, a := range data.AdminsList {
+				<div class="bg-base-200 p-4 rounded-xl flex justify-between items-center">
+					<div>
+						<div class="font-bold">
+							{ a.Name }
+							if a.IsSuper {
+								<span class="badge badge-warning badge-sm">super</span>
+							}
+						</div>
+						<div class="text-xs text-base-content/70">{ a.Username } · { a.Phone }</div>
+					</div>
+					if a.Enabled {
+						<span class="badge badge-success">ativo</span>
+					} else {
+						<span class="badge badge-error">desativado</span>
+					}
+				</div>
+			}
+		</div>
+		<button hx-get="/ui/admin" hx-target="#app" class="btn btn-ghost w-full">← Voltar ao Painel</button>
+	</div>
+}

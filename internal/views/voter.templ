@@ -1,0 +1,69 @@
+package views
+
+templ Auth(data PageData) {
+	<div class="card bg-base-100 shadow-xl p-8 max-w-md mx-auto space-y-6">
+		<h2 class="text-2xl font-bold text-center text-primary">🗳️ Acesso do Eleitor</h2>
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		<form hx-post="/ui/request-passcode" hx-target="#app" class="bg-base-200 p-4 rounded-xl space-y-2">
+			<span class="text-sm font-semibold text-gray-500 block">Solicitar código de votação</span>
+			<input name="cpf" placeholder="000.000.000-00" onkeyup="formatCPF(this)" class="input input-bordered w-full" required/>
+			<input name="name" placeholder="Nome completo" class="input input-bordered w-full" required/>
+			<div class="flex gap-2">
+				<input name="country_code" placeholder="+55" value="+55" class="input input-bordered w-20" required/>
+				<input name="phone" placeholder="(11) 98765-4321" onkeyup="formatPhone(this)" class="input input-bordered w-full" required/>
+			</div>
+			<button class="btn btn-primary w-full">
+				<input type="hidden" name="csrf_token" value={ data.CSRFToken }/>
+				📱 Solicitar Código
+			</button>
+		</form>
+		<div class="divider">JÁ TENHO UM CÓDIGO</div>
+		<form hx-post="/ui/verify" hx-target="#app" class="space-y-2">
+			<input name="cpf" placeholder="000.000.000-00" onkeyup="formatCPF(this)" class="input input-bordered w-full" required/>
+			<input name="passcode" placeholder="Código recebido" maxlength="4" class="input input-bordered w-full" required/>
+			<button class="btn btn-secondary w-full">✅ Verificar Código</button>
+		</form>
+		<button hx-get="/" hx-target="#app" class="btn btn-ghost w-full">← Voltar</button>
+	</div>
+}
+
+templ VerifyForm(data PageData) {
+	<div class="card bg-base-100 shadow-xl p-8 max-w-md mx-auto space-y-6">
+		<h2 class="text-2xl font-bold text-center text-secondary">✅ Verificar Código</h2>
+		if data.Error != "" {
+			<div class="alert alert-error">{ data.Error }</div>
+		}
+		<form hx-post="/ui/verify" hx-target="#app" class="space-y-2">
+			<input name="cpf" placeholder="000.000.000-00" onkeyup="formatCPF(this)" class="input input-bordered w-full" required/>
+			<input name="passcode" placeholder="Código recebido" maxlength="4" class="input input-bordered w-full" required/>
+			<button class="btn btn-secondary w-full">Verificar</button>
+		</form>
+		<button hx-get="/ui/voting-flow" hx-target="#app" class="btn btn-ghost w-full">← Voltar</button>
+	</div>
+}
+
+templ VotingFlow(data PageData) {
+	<div class="space-y-6 max-w-md mx-auto">
+		<h2 class="text-2xl font-bold text-center">Como você quer continuar?</h2>
+		<button hx-get="/ui/request-passcode-form" hx-target="#app" class="btn btn-primary btn-lg w-full">
+			📱 Solicitar código de votação
+		</button>
+		<button hx-get="/ui/verify-form" hx-target="#app" class="btn btn-secondary btn-lg w-full">
+			✅ Já tenho um código
+		</button>
+		<button hx-get="/" hx-target="#app" class="btn btn-ghost w-full">← Voltar ao Início</button>
+	</div>
+}
+
+templ PasscodeSent(data PageData) {
+	<div class="card bg-base-100 shadow-xl p-8 text-center space-y-6 max-w-md mx-auto">
+		<h2 class="text-3xl font-bold text-success">✅ Código enviado!</h2>
+		<p class="text-lg">Use o link abaixo para receber o código via WhatsApp e depois insira-o na tela de verificação.</p>
+		if data.WhatsAppURL != "" {
+			<a href={ templ.SafeURL(data.WhatsAppURL) } target="_blank" class="btn btn-primary btn-lg w-full">📱 Enviar Código via WhatsApp</a>
+		}
+		<button hx-get="/ui/verify-form" hx-target="#app" class="btn btn-outline w-full">Já recebi, verificar código</button>
+	</div>
+}

@@ -1,0 +1,83 @@
+package views
+
+import "github.com/waldirborbajr/govote/internal/models"
+
+// PageData mirrors the old web.PageData for gradual migration.
+type PageData struct {
+	Error       string
+	Message     string
+	CPF         string
+	Polls       []models.Poll
+	Poll        models.Poll
+	Results     []models.ResultAnswer
+	WhatsAppURL string
+	AdminUser   *models.Admin
+	AdminsList  []models.Admin
+	CSRFToken   string
+}
+
+templ Page(data PageData) {
+	<!doctype html>
+	<html>
+	<head>
+		<meta charset="utf-8"/>
+		<title>Vote API - PoC</title>
+		<link href="/static/app.css" rel="stylesheet" type="text/css"/>
+		<script src="/static/htmx.min.js"></script>
+		<script>
+			function formatCPF(input) {
+				let v = input.value.replace(/\D/g, '');
+				v = v.replace(/(\d{3})(\d)/, '$1.$2');
+				v = v.replace(/(\d{3})(\d)/, '$1.$2');
+				v = v.replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+				input.value = v.substring(0, 14);
+			}
+			function formatPhone(input) {
+				let v = input.value.replace(/\D/g, '');
+				if (v.length > 11) v = v.substring(0, 11);
+				if (v.length <= 10) {
+					v = v.replace(/(\d{2})(\d)/, '($1) $2');
+					v = v.replace(/(\d{4})(\d)/, '$1-$2');
+				} else {
+					v = v.replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
+				}
+				input.value = v;
+			}
+		</script>
+	</head>
+	<body class="bg-base-200 min-h-screen p-4 md:p-8">
+		<div class="max-w-3xl mx-auto bg-base-100 p-8 rounded-3xl shadow-2xl">
+			<h1 class="text-4xl font-bold mb-2 text-center text-primary">🗳️ Vote API</h1>
+			<p class="text-center text-base-content/70 mb-10">Sistema de Votação Simples e Seguro</p>
+			<div id="app">
+				@Index(data)
+			</div>
+		</div>
+	</body>
+	</html>
+}
+
+templ Index(data PageData) {
+	<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+		<div class="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-all">
+			<div class="text-center mb-6">
+				<div class="text-5xl mb-4">🗳️</div>
+				<h2 class="text-2xl font-bold mb-2">Votar</h2>
+				<p class="text-base-content/70">Participe das enquetes ativas</p>
+			</div>
+			<button hx-get="/ui/voting-flow" hx-target="#app" class="btn btn-primary btn-lg w-full">
+				Acessar Votação
+			</button>
+		</div>
+		<div class="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-all">
+			<div class="text-center mb-6">
+				<div class="text-5xl mb-4">⚙️</div>
+				<h2 class="text-2xl font-bold mb-2">Administração</h2>
+				<p class="text-base-content/70">Gerenciar enquetes e resultados</p>
+			</div>
+			<button hx-get="/ui/admin" hx-target="#app" class="btn btn-secondary btn-lg w-full">
+				Entrar como Administrador
+			</button>
+		</div>
+	</div>
+}
