@@ -69,6 +69,7 @@ func run() error {
 		<-stop
 		cancel()
 		time.Sleep(500 * time.Millisecond)
+		shutdownDB()
 		return nil
 	}
 
@@ -152,6 +153,20 @@ func run() error {
 		log.Printf("⚠️  Erro durante shutdown do servidor HTTPS: %v", err)
 	}
 
+	shutdownDB()
 	fmt.Println("✅ Servidores encerrados com sucesso (todas as sessões ativas foram finalizadas)")
 	return nil
+}
+
+// shutdownDB runs a WAL checkpoint + optimize so the main DB file absorbs
+// recent writes and the query planner has fresh stats for the next start.
+func shutdownDB() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := storage.Checkpoint(ctx); err != nil {
+		log.Printf("⚠️  wal_checkpoint: %v", err)
+	}
+	if err := storage.Optimize(ctx); err != nil {
+		log.Printf("⚠️  pragma optimize: %v", err)
+	}
 }

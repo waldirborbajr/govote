@@ -209,6 +209,9 @@ func (e *VoteError) Error() string {
 }
 
 // CastVote validates and stores a vote.
+// Validation reads run outside a transaction; the critical section
+// (duplicate check + INSERT vote + UPDATE voter) runs in a single
+// transaction to shorten lock time and close the race window under load.
 func CastVote(
 	pollID int64,
 	cpf string,
@@ -218,7 +221,6 @@ func CastVote(
 	cpf = strings.TrimSpace(cpf)
 
 	if cpf == "" || len(answerIDs) == 0 {
-
 		return &VoteError{
 			Status:  http.StatusBadRequest,
 			Message: "cpf and answer_ids required",
@@ -243,27 +245,17 @@ func CastVote(
 	)
 
 	err := storage.DB.QueryRow(
-		`
-		SELECT type,start_date,end_date
-		FROM polls
-		WHERE id = ?
-		`,
+		`SELECT type, start_date, end_date FROM polls WHERE id = ?`,
 		pollID,
-	).Scan(
-		&pollType,
-		&startDate,
-		&endDate,
-	)
+	).Scan(&pollType, &startDate, &endDate)
 
 	if err != nil {
-
 		if err == sql.ErrNoRows {
 			return &VoteError{
 				Status:  http.StatusNotFound,
 				Message: "poll not found",
 			}
 		}
-
 		return &VoteError{
 			Status:  http.StatusInternalServerError,
 			Message: "database error",
@@ -271,7 +263,6 @@ func CastVote(
 	}
 
 	if !IsActive(startDate, endDate) {
-
 		return &VoteError{
 			Status:  http.StatusGone,
 			Message: "poll is no longer active",
@@ -279,7 +270,6 @@ func CastVote(
 	}
 
 	if pollType == "radio" && len(answerIDs) > 1 {
-
 		return &VoteError{
 			Status:  http.StatusBadRequest,
 			Message: "radio poll accepts only one answer",
@@ -287,125 +277,85 @@ func CastVote(
 	}
 
 	for _, answerID := range answerIDs {
-
 		var id int64
-
 		err := storage.DB.QueryRow(
-			`
-			SELECT id
-			FROM answers
-			WHERE id = ?
-			AND poll_id = ?
-			`,
-			answerID,
-			pollID,
+			`SELECT id FROM answers WHERE id = ? AND poll_id = ?`,
+			answerID, pollID,
 		).Scan(&id)
-
 		if err != nil {
-
 			return &VoteError{
-				Status: http.StatusBadRequest,
-				Message: fmt.Sprintf(
-					"answer %d not found",
-					answerID,
-				),
+				Status:  http.StatusBadRequest,
+				Message: fmt.Sprintf("answer %d not found", answerID),
 			}
 		}
 	}
 
 	voterHash := security.HashCPF(cpf)
 
-	var existing int64
-
-	err = storage.DB.QueryRow(
-		`
-		SELECT id
-		FROM votes
-		WHERE poll_id = ?
-		AND voter_hash = ?
-		`,
-		pollID,
-		voterHash,
-	).Scan(&existing)
-
-	if err == nil {
-
-		return &VoteError{
-			Status:  http.StatusConflict,
-			Message: "cpf already voted",
-		}
-	}
-
-	if err != sql.ErrNoRows {
-
-		return &VoteError{
-			Status:  http.StatusInternalServerError,
-			Message: "db error",
-		}
-	}
-
 	answerJSON, err := json.Marshal(answerIDs)
-
 	if err != nil {
-
 		return &VoteError{
 			Status:  http.StatusInternalServerError,
 			Message: "failed encoding vote",
 		}
 	}
 
-	now := time.Now().
-		UTC().
-		Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
 
-	_, err = storage.DB.Exec(
-		`
-		INSERT INTO votes
-		(
-		 poll_id,
-		 voter_hash,
-		 answer_ids,
-		 voted_at
-		)
-		VALUES(?,?,?,?)
-		`,
-		pollID,
-		voterHash,
-		string(answerJSON),
-		now,
-	)
-
+	tx, err := storage.DB.Begin()
 	if err != nil {
+		return &VoteError{
+			Status:  http.StatusInternalServerError,
+			Message: "database error",
+		}
+	}
+	defer func() { _ = tx.Rollback() }()
 
+	var existing int64
+	err = tx.QueryRow(
+		`SELECT id FROM votes WHERE poll_id = ? AND voter_hash = ?`,
+		pollID, voterHash,
+	).Scan(&existing)
+	if err == nil {
+		return &VoteError{
+			Status:  http.StatusConflict,
+			Message: "cpf already voted",
+		}
+	}
+	if err != sql.ErrNoRows {
+		return &VoteError{
+			Status:  http.StatusInternalServerError,
+			Message: "db error",
+		}
+	}
+
+	if _, err = tx.Exec(
+		`INSERT INTO votes (poll_id, voter_hash, answer_ids, voted_at) VALUES (?,?,?,?)`,
+		pollID, voterHash, string(answerJSON), now,
+	); err != nil {
 		return &VoteError{
 			Status:  http.StatusInternalServerError,
 			Message: "failed saving vote",
 		}
 	}
 
-	_, err = storage.DB.Exec(
-		`
-		UPDATE voters
-		SET passcode = NULL,
-		    used_at = ?
-		WHERE cpf = ?
-		`,
-		now,
-		cpf,
-	)
-
-	if err != nil {
-
+	if _, err = tx.Exec(
+		`UPDATE voters SET passcode = NULL, used_at = ? WHERE cpf = ?`,
+		now, cpf,
+	); err != nil {
 		return &VoteError{
 			Status:  http.StatusInternalServerError,
 			Message: "failed updating voter",
 		}
 	}
 
-	storage.LogAction(
-		"VOTE_SUBMITTED",
-		fmt.Sprintf("PollID: %d", pollID),
-	)
+	if err = tx.Commit(); err != nil {
+		return &VoteError{
+			Status:  http.StatusInternalServerError,
+			Message: "failed committing vote",
+		}
+	}
 
+	storage.LogAction("VOTE_SUBMITTED", fmt.Sprintf("PollID: %d", pollID))
 	return nil
 }

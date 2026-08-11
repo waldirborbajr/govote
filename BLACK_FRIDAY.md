@@ -8,7 +8,7 @@
 | **Nginx** | Load balancer `least_conn`, health via `/health`, `max_fails`/`fail_timeout`, retry upstream |
 | **govote-1/2/3** | Réplicas HTTP stateless (leituras + enqueue) |
 | **vote-worker** | Único consumidor da fila → grava SQLite (serializa writes de voto) |
-| **SQLite WAL** | `journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL` |
+| **SQLite WAL + perf** | `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `cache_size≈128MiB`, `mmap_size=256MiB`, `temp_store=MEMORY`, `journal_size_limit=64MiB`, índices hot-path, voto em transação, checkpoint no shutdown |
 | **Stress + chaos** | k6 + scripts de kill/restart de nó |
 
 ## Variáveis novas

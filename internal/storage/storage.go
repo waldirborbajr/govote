@@ -1,14 +1,12 @@
-// storage.go
-//
-// This package uses only database/sql with the pure-Go modernc.org/sqlite
-// driver (no CGO). Every query must go through storage.DB.
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,40 +16,69 @@ import (
 // DB is the shared database handle. It is nil until MustOpen has been called.
 var DB *sql.DB
 
-// MustOpen opens (or creates) the SQLite database at path.
+// MustOpen opens (or creates) the SQLite database at path and applies
+// performance-oriented PRAGMAs suitable for a short-lived high-load event
+// (Black Friday) with WAL + possible multi-process access on a shared volume.
 func MustOpen(path string) *sql.DB {
 	var err error
 
-	// busy_timeout helps under concurrent readers/writers (WAL).
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	// DSN pragmas are applied at connection time; we still re-apply below
+	// because some drivers / connection pools ignore DSN-only settings.
+	dsn := path +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=temp_store(MEMORY)"
+
 	DB, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("failed opening database: %v", err)
 	}
 
-	// SQLite: single writer process is safest. With WAL, limited concurrent
-	// readers are fine; keep MaxOpenConns low to avoid lock storms.
-	DB.SetMaxOpenConns(1)
-	DB.SetMaxIdleConns(1)
+	// SQLite: one writer per process is safest. With WAL, concurrent readers
+	// across processes are fine. Keep MaxOpenConns low to avoid lock storms
+	// when several API replicas + vote-worker share the same file.
+	maxOpen := 1
+	if v := os.Getenv("GOVOTE_DB_MAX_OPEN_CONNS"); v != "" {
+		if n, e := strconv.Atoi(v); e == nil && n > 0 {
+			maxOpen = n
+		}
+	}
+	DB.SetMaxOpenConns(maxOpen)
+	DB.SetMaxIdleConns(maxOpen)
 	DB.SetConnMaxLifetime(0)
 
 	if err := DB.Ping(); err != nil {
 		log.Fatalf("failed connecting database: %v", err)
 	}
 
-	// Apply pragmas explicitly (some drivers ignore DSN pragmas).
+	// Explicit PRAGMAs (performance + durability balance for event load).
+	// cache_size negative = KiB; -128000 ≈ 128 MiB page cache.
+	// mmap_size enables memory-mapped reads (big win for result scans).
+	// journal_size_limit caps WAL growth under vote bursts.
 	for _, pr := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA temp_store=MEMORY",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA cache_size=-128000",
+		"PRAGMA mmap_size=268435456",
+		"PRAGMA wal_autocheckpoint=1000",
+		"PRAGMA journal_size_limit=67108864",
 	} {
 		if _, err := DB.Exec(pr); err != nil {
 			log.Printf("⚠️  pragma %s: %v", pr, err)
 		}
 	}
 
-	log.Printf("SQLite database opened at %s (WAL mode)", path)
+	// PRAGMA optimize (no-op on empty/fresh DB; cheap query-planner hints later).
+	if _, err := DB.Exec("PRAGMA optimize"); err != nil {
+		log.Printf("⚠️  pragma optimize: %v", err)
+	}
+
+	log.Printf("SQLite database opened at %s (WAL, cache≈128MiB, mmap=256MiB, max_open=%d)", path, maxOpen)
 	return DB
 }
 
@@ -64,6 +91,27 @@ func InitDB() error {
 		return err
 	}
 	return bootstrapSuperAdmin()
+}
+
+// Checkpoint forces a WAL checkpoint (TRUNCATE when possible). Call on graceful
+// shutdown so the main DB file absorbs recent writes and the -wal file shrinks.
+func Checkpoint(ctx context.Context) error {
+	if DB == nil {
+		return nil
+	}
+	// PASSIVE is always safe; TRUNCATE tries to reset the WAL file.
+	_, err := DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
+// Optimize runs PRAGMA optimize (query planner statistics). Safe to call
+// periodically or on shutdown.
+func Optimize(ctx context.Context) error {
+	if DB == nil {
+		return nil
+	}
+	_, err := DB.ExecContext(ctx, "PRAGMA optimize")
+	return err
 }
 
 // BoolToInt converts a bool to the 0/1 representation used for SQLite INTEGER booleans.
@@ -163,7 +211,15 @@ CREATE TABLE IF NOT EXISTS auth_lockout (
 	updated_at  TEXT NOT NULL
 );
 
+-- Existing
 CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log(at);
+
+-- Hot-path indexes (Black Friday / concurrent vote + results)
+CREATE INDEX IF NOT EXISTS idx_answers_poll_id ON answers(poll_id);
+CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON votes(poll_id);
+CREATE INDEX IF NOT EXISTS idx_votes_voted_at ON votes(voted_at);
+CREATE INDEX IF NOT EXISTS idx_admin_phone ON admin(phone);
+CREATE INDEX IF NOT EXISTS idx_polls_dates ON polls(start_date, end_date);
 `
 
 	if _, err := DB.Exec(schema); err != nil {
