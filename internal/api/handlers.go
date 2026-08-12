@@ -480,52 +480,10 @@ func HandleResults(w http.ResponseWriter, r *http.Request) {
 	}
 	pollEndDate, _ := time.Parse(time.RFC3339, endDateStr)
 
-	arows, err := storage.DB.Query(
-		`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
-		pollID,
-	)
+	results, err := poll.GetResults(pollID)
 	if err != nil {
 		web.RespondError(w, http.StatusInternalServerError, "db error")
 		return
-	}
-	defer arows.Close()
-
-	answerMap := make(map[int64]models.ResultAnswer)
-	for arows.Next() {
-		var id int64
-		var text string
-		if err := arows.Scan(&id, &text); err != nil {
-			web.RespondError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-		answerMap[id] = models.ResultAnswer{ID: id, Text: text, Votes: 0}
-	}
-
-	vrows, err := storage.DB.Query(`SELECT answer_ids FROM votes WHERE poll_id = ?`, pollID)
-	if err != nil {
-		web.RespondError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	defer vrows.Close()
-
-	for vrows.Next() {
-		var answerJSON string
-		if err := vrows.Scan(&answerJSON); err != nil {
-			continue
-		}
-		var ids []int64
-		json.Unmarshal([]byte(answerJSON), &ids)
-		for _, id := range ids {
-			if ans, ok := answerMap[id]; ok {
-				ans.Votes++
-				answerMap[id] = ans
-			}
-		}
-	}
-
-	var results []models.ResultAnswer
-	for _, ans := range answerMap {
-		results = append(results, ans)
 	}
 
 	if time.Now().After(pollEndDate) {

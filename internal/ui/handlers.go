@@ -5,7 +5,6 @@ package ui
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -493,48 +492,10 @@ func HandleUIResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	arows, err := storage.DB.Query(`SELECT id, text FROM answers WHERE poll_id = ? ORDER BY display_order ASC`, pollID)
+	results, err := poll.GetResults(pollID)
 	if err != nil {
-		renderUIAdminPollsList(w, admin, "Erro na leitura de respostas")
+		renderUIAdminPollsList(w, admin, "Erro na leitura de resultados")
 		return
-	}
-	defer arows.Close()
-
-	answerMap := make(map[int64]*models.ResultAnswer)
-	var order []int64
-	for arows.Next() {
-		var id int64
-		var text string
-		if err := arows.Scan(&id, &text); err != nil {
-			continue
-		}
-		answerMap[id] = &models.ResultAnswer{ID: id, Text: text, Votes: 0}
-		order = append(order, id)
-	}
-
-	vrows, err := storage.DB.Query(`SELECT answer_ids FROM votes WHERE poll_id = ?`, pollID)
-	if err == nil {
-		defer vrows.Close()
-		for vrows.Next() {
-			var answerJSON string
-			if err := vrows.Scan(&answerJSON); err != nil {
-				continue
-			}
-			var ids []int64
-			json.Unmarshal([]byte(answerJSON), &ids)
-			for _, id := range ids {
-				if a, ok := answerMap[id]; ok {
-					a.Votes++
-				}
-			}
-		}
-	}
-
-	var results []models.ResultAnswer
-	for _, id := range order {
-		if a, ok := answerMap[id]; ok {
-			results = append(results, *a)
-		}
 	}
 
 	web.Templates.ExecuteTemplate(w, "results", web.PageData{AdminUser: admin, Poll: p, Results: results})

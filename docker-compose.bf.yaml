@@ -26,6 +26,12 @@ x-govote-common: &govote-common
     GOVOTE_REQUIRE_SECRETS: "true"
     GOVOTE_PASSCODE_TTL_MINUTES: "30"
     GOVOTE_N8N_API_KEY: ${GOVOTE_N8N_API_KEY:-}
+    # API replicas são majoritariamente leitura (listar polls, resultados,
+    # "já votei"). Em WAL, leitores não bloqueiam escritores nem uns aos
+    # outros — travar em 1 conexão por processo (default) serializa essas
+    # leituras à toa. busy_timeout=5000 já absorve o SQLITE_BUSY ocasional
+    # quando uma dessas conexões também grava (fluxo de auth/passcode).
+    GOVOTE_DB_MAX_OPEN_CONNS: "4"
   volumes:
     - ./data:/data
   depends_on:
@@ -85,6 +91,9 @@ services:
       <<: *govote-env
       GOVOTE_VOTE_WORKER: "true"
       GOVOTE_VOTE_ASYNC: "true"
+      # Único escritor de votos, consumindo a fila em série — sem ganho em
+      # ter mais de 1 conexão, e mantém o writer previsível.
+      GOVOTE_DB_MAX_OPEN_CONNS: "1"
     ports: []
     healthcheck:
       disable: true

@@ -22,23 +22,37 @@ var DB *sql.DB
 func MustOpen(path string) *sql.DB {
 	var err error
 
-	// DSN pragmas are applied at connection time; we still re-apply below
-	// because some drivers / connection pools ignore DSN-only settings.
+	// DSN pragmas are applied to EVERY connection the pool opens (unlike the
+	// one-shot DB.Exec loop below, which only ever touches the first
+	// connection handed out). This matters as soon as GOVOTE_DB_MAX_OPEN_CONNS
+	// is raised above 1 (e.g. read-heavy API replicas during Black Friday):
+	// cache_size/mmap_size/wal_autocheckpoint/journal_size_limit are
+	// per-connection state in SQLite, so they must live here too — otherwise
+	// every pooled connection past the first would silently fall back to
+	// SQLite's tiny 2MiB default cache and mmap disabled.
 	dsn := path +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
 		"&_pragma=foreign_keys(1)" +
-		"&_pragma=temp_store(MEMORY)"
+		"&_pragma=temp_store(MEMORY)" +
+		"&_pragma=cache_size(-128000)" +
+		"&_pragma=mmap_size(268435456)" +
+		"&_pragma=wal_autocheckpoint(1000)" +
+		"&_pragma=journal_size_limit(67108864)"
 
 	DB, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("failed opening database: %v", err)
 	}
 
-	// SQLite: one writer per process is safest. With WAL, concurrent readers
-	// across processes are fine. Keep MaxOpenConns low to avoid lock storms
-	// when several API replicas + vote-worker share the same file.
+	// Default stays conservative (1) for single-process/dev use. In WAL mode
+	// SQLite allows many concurrent readers alongside a single writer, so
+	// read-heavy deployments (e.g. API replicas during Black Friday, see
+	// docker-compose.bf.yaml) should raise this via GOVOTE_DB_MAX_OPEN_CONNS
+	// — busy_timeout already absorbs the occasional SQLITE_BUSY when one of
+	// those connections also writes (auth/passcode flow). The vote-worker,
+	// which is the single serialized writer of `votes`, should stay at 1.
 	maxOpen := 1
 	if v := os.Getenv("GOVOTE_DB_MAX_OPEN_CONNS"); v != "" {
 		if n, e := strconv.Atoi(v); e == nil && n > 0 {
@@ -53,10 +67,10 @@ func MustOpen(path string) *sql.DB {
 		log.Fatalf("failed connecting database: %v", err)
 	}
 
-	// Explicit PRAGMAs (performance + durability balance for event load).
-	// cache_size negative = KiB; -128000 ≈ 128 MiB page cache.
-	// mmap_size enables memory-mapped reads (big win for result scans).
-	// journal_size_limit caps WAL growth under vote bursts.
+	// Belt-and-suspenders re-apply on whichever connection this Exec lands
+	// on, in case a driver ignores one of the DSN-only settings above. Not a
+	// substitute for the DSN pragmas: this loop only ever touches a single
+	// pooled connection, never the others.
 	for _, pr := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL",
@@ -216,14 +230,41 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log(at);
 
 -- Hot-path indexes (Black Friday / concurrent vote + results)
 CREATE INDEX IF NOT EXISTS idx_answers_poll_id ON answers(poll_id);
-CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON votes(poll_id);
-CREATE INDEX IF NOT EXISTS idx_votes_voted_at ON votes(voted_at);
 CREATE INDEX IF NOT EXISTS idx_admin_phone ON admin(phone);
 CREATE INDEX IF NOT EXISTS idx_polls_dates ON polls(start_date, end_date);
+
+-- polls listed by owner ("minhas enquetes"), newest first.
+CREATE INDEX IF NOT EXISTS idx_polls_created_by ON polls(created_by, created_at DESC);
+
+-- Matches the only query that touches voted_at (admin dashboard hourly
+-- timeline), which groups by strftime(...) and therefore cannot use a plain
+-- index on the raw column.
+CREATE INDEX IF NOT EXISTS idx_votes_hour ON votes(strftime('%Y-%m-%dT%H:00:00', voted_at));
 `
 
 	if _, err := DB.Exec(schema); err != nil {
 		return fmt.Errorf("database migration error: %w", err)
+	}
+
+	// Drop indexes that are dead weight on the hottest write path (one vote
+	// insert = one write into every index on `votes`):
+	//   - idx_votes_poll_id: fully redundant. UNIQUE(poll_id, voter_hash)
+	//     already creates a composite index with poll_id as the leading
+	//     column, so every "WHERE poll_id = ?" query already has a covering
+	//     index without this one.
+	//   - idx_votes_voted_at: plain index on voted_at that no query ever
+	//     used — the only query touching voted_at wraps it in strftime(),
+	//     replaced above by idx_votes_hour.
+	// CREATE INDEX IF NOT EXISTS never removes stale indexes on databases
+	// that already exist in the field, so this cleanup is explicit and
+	// idempotent (DROP INDEX IF EXISTS is a no-op on fresh databases).
+	for _, stmt := range []string{
+		`DROP INDEX IF EXISTS idx_votes_poll_id`,
+		`DROP INDEX IF EXISTS idx_votes_voted_at`,
+	} {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("database migration error (index cleanup): %w", err)
+		}
 	}
 
 	// Migração incremental: telegram_chat_id foi adicionado após o schema
