@@ -221,14 +221,26 @@ func HandleListPolls(w http.ResponseWriter, r *http.Request) {
 			web.RespondError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		polls = append(polls, p)
+	}
+	if err := rows.Err(); err != nil {
+		web.RespondError(w, http.StatusInternalServerError, "db error")
+		return
+	}
 
-		answers, err := fetchAnswers(p.ID)
+	if len(polls) > 0 {
+		ids := make([]int64, len(polls))
+		for i, p := range polls {
+			ids[i] = p.ID
+		}
+		answersByPoll, err := fetchAnswersForPolls(ids)
 		if err != nil {
 			web.RespondError(w, http.StatusInternalServerError, "db error")
 			return
 		}
-		p.Answers = answers
-		polls = append(polls, p)
+		for i := range polls {
+			polls[i].Answers = answersByPoll[polls[i].ID]
+		}
 	}
 
 	if polls == nil {
@@ -238,7 +250,7 @@ func HandleListPolls(w http.ResponseWriter, r *http.Request) {
 	web.RespondJSON(w, http.StatusOK, polls)
 }
 
-// fetchAnswers returns the answers for a poll, ordered by display_order.
+// fetchAnswers returns the answers for a single poll, ordered by display_order.
 func fetchAnswers(pollID int64) ([]models.Answer, error) {
 	arows, err := storage.DB.Query(
 		`SELECT id, poll_id, text, display_order FROM answers WHERE poll_id = ? ORDER BY display_order ASC`,
@@ -257,7 +269,43 @@ func fetchAnswers(pollID int64) ([]models.Answer, error) {
 		}
 		answers = append(answers, a)
 	}
-	return answers, nil
+	return answers, arows.Err()
+}
+
+// fetchAnswersForPolls returns the answers for every poll in pollIDs, grouped
+// by poll_id, using a single batched query (WHERE poll_id IN (...)) instead
+// of one round trip per poll — same batching pattern already used by
+// poll.validateAnswerIDs. HandleListPolls used to call fetchAnswers once per
+// poll in a loop (an N+1 query), which meant one extra round trip to SQLite
+// for every active poll on every cache-miss request.
+func fetchAnswersForPolls(pollIDs []int64) (map[int64][]models.Answer, error) {
+	placeholders := make([]string, len(pollIDs))
+	args := make([]any, len(pollIDs))
+	for i, id := range pollIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := storage.DB.Query(
+		`SELECT id, poll_id, text, display_order FROM answers
+		 WHERE poll_id IN (`+strings.Join(placeholders, ",")+`)
+		 ORDER BY poll_id, display_order ASC`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byPoll := make(map[int64][]models.Answer, len(pollIDs))
+	for rows.Next() {
+		var a models.Answer
+		if err := rows.Scan(&a.ID, &a.PollID, &a.Text, &a.DisplayOrder); err != nil {
+			return nil, err
+		}
+		byPoll[a.PollID] = append(byPoll[a.PollID], a)
+	}
+	return byPoll, rows.Err()
 }
 
 // HandleGetPoll returns a single active poll with its answers.

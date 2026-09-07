@@ -1,6 +1,3 @@
-// Command govote starts the voting API: it opens the SQLite database, ensures a
-// TLS certificate exists, and runs an HTTPS server plus an HTTP→HTTPS redirector
-// with graceful shutdown.
 package main
 
 import (

@@ -8,6 +8,7 @@ package views
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
+import "github.com/waldirborbajr/govote/internal/assets"
 import "github.com/waldirborbajr/govote/internal/models"
 
 // PageData mirrors the old web.PageData for gradual migration.
@@ -45,7 +46,25 @@ func Page(data PageData) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Vote API - PoC</title><link href=\"/static/app.css\" rel=\"stylesheet\" type=\"text/css\"><script src=\"/static/htmx.min.js\"></script><script>\n\t\t\tfunction formatCPF(input) {\n\t\t\t\tlet v = input.value.replace(/\\D/g, '');\n\t\t\t\tv = v.replace(/(\\d{3})(\\d)/, '$1.$2');\n\t\t\t\tv = v.replace(/(\\d{3})(\\d)/, '$1.$2');\n\t\t\t\tv = v.replace(/(\\d{3})(\\d{1,2})$/, '$1-$2');\n\t\t\t\tinput.value = v.substring(0, 14);\n\t\t\t}\n\t\t\tfunction formatPhone(input) {\n\t\t\t\tlet v = input.value.replace(/\\D/g, '');\n\t\t\t\tif (v.length > 11) v = v.substring(0, 11);\n\t\t\t\tif (v.length <= 10) {\n\t\t\t\t\tv = v.replace(/(\\d{2})(\\d)/, '($1) $2');\n\t\t\t\t\tv = v.replace(/(\\d{4})(\\d)/, '$1-$2');\n\t\t\t\t} else {\n\t\t\t\t\tv = v.replace(/(\\d{2})(\\d{5})(\\d{4})/, '($1) $2-$3');\n\t\t\t\t}\n\t\t\t\tinput.value = v;\n\t\t\t}\n\t\t</script></head><body class=\"bg-base-200 min-h-screen p-4 md:p-8\"><div class=\"max-w-3xl mx-auto bg-base-100 p-8 rounded-3xl shadow-2xl\"><h1 class=\"text-4xl font-bold mb-2 text-center text-primary\">🗳️ Vote API</h1><p class=\"text-center text-base-content/70 mb-10\">Sistema de Votação Simples e Seguro</p><div id=\"app\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Vote API - PoC</title><link href=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var2 templ.SafeURL = templ.SafeURL("/static/app.css?v=" + assets.CSSVersion)
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(string(templ_7745c5c3_Var2)))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(" rel=\"stylesheet\" type=\"text/css\"><script src=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var3 templ.SafeURL = templ.SafeURL("/static/htmx.min.js?v=" + assets.HTMXVersion)
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(string(templ_7745c5c3_Var3)))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("></script><script>\n\t\t\tfunction formatCPF(input) {\n\t\t\t\tlet v = input.value.replace(/\\D/g, '');\n\t\t\t\tv = v.replace(/(\\d{3})(\\d)/, '$1.$2');\n\t\t\t\tv = v.replace(/(\\d{3})(\\d)/, '$1.$2');\n\t\t\t\tv = v.replace(/(\\d{3})(\\d{1,2})$/, '$1-$2');\n\t\t\t\tinput.value = v.substring(0, 14);\n\t\t\t}\n\t\t\tfunction formatPhone(input) {\n\t\t\t\tlet v = input.value.replace(/\\D/g, '');\n\t\t\t\tif (v.length > 11) v = v.substring(0, 11);\n\t\t\t\tif (v.length <= 10) {\n\t\t\t\t\tv = v.replace(/(\\d{2})(\\d)/, '($1) $2');\n\t\t\t\t\tv = v.replace(/(\\d{4})(\\d)/, '$1-$2');\n\t\t\t\t} else {\n\t\t\t\t\tv = v.replace(/(\\d{2})(\\d{5})(\\d{4})/, '($1) $2-$3');\n\t\t\t\t}\n\t\t\t\tinput.value = v;\n\t\t\t}\n\t\t</script></head><body class=\"bg-base-200 min-h-screen p-4 md:p-8\"><div class=\"max-w-3xl mx-auto bg-base-100 p-8 rounded-3xl shadow-2xl\"><h1 class=\"text-4xl font-bold mb-2 text-center text-primary\">🗳️ Vote API</h1><p class=\"text-center text-base-content/70 mb-10\">Sistema de Votação Simples e Seguro</p><div id=\"app\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

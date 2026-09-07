@@ -1,6 +1,9 @@
 package views
 
-import "github.com/waldirborbajr/govote/internal/models"
+import (
+	"github.com/waldirborbajr/govote/internal/assets"
+	"github.com/waldirborbajr/govote/internal/models"
+)
 
 // PageData mirrors the old web.PageData for gradual migration.
 type PageData struct {
@@ -22,8 +25,8 @@ templ Page(data PageData) {
 	<head>
 		<meta charset="utf-8"/>
 		<title>Vote API - PoC</title>
-		<link href="/static/app.css" rel="stylesheet" type="text/css"/>
-		<script src="/static/htmx.min.js"></script>
+		<link href={ templ.SafeURL("/static/app.css?v=" + assets.CSSVersion) } rel="stylesheet" type="text/css"/>
+		<script src={ templ.SafeURL("/static/htmx.min.js?v=" + assets.HTMXVersion) }></script>
 		<script>
 			function formatCPF(input) {
 				let v = input.value.replace(/\D/g, '');

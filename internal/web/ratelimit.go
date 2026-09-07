@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/waldirborbajr/govote/internal/cache"
 )
 
 // ---------------------------------------------------------------------------
@@ -176,10 +178,18 @@ func normalizeIP(s string) string {
 
 // RateLimitMiddleware rejects requests from an IP that exceeds the per-window
 // request budget. Responde 429 com Retry-After quando bloqueado.
+//
+// Quando Redis está disponível (cache.Enabled()), o limite é aplicado via
+// cache.AllowRateLimit — um sorted-set compartilhado entre todas as réplicas
+// (govote-1/2/3), então o orçamento por IP é o mesmo não importa qual
+// réplica o nginx escolher. Sem Redis, cai para o limitador local em
+// memória (rateLimiter), que só enxerga requisições do próprio processo —
+// suficiente para um único host, mas não para o cenário multi-réplica do
+// docker-compose.bf.yaml, daí a preferência pelo Redis quando ele existe.
 func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := getClientIP(r)
-		ok, retryAfter := rateLimiter.allow(ip)
+		ok, retryAfter := allowRequest(ip)
 		if !ok {
 			secs := int(retryAfter.Seconds())
 			if secs < 1 {
@@ -191,4 +201,14 @@ func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next.ServeHTTP(w, r)
 	}
+}
+
+// allowRequest aplica o limite via Redis (cache.AllowRateLimit) quando
+// disponível — compartilhado entre réplicas — e cai para o limitador em
+// memória do processo (rateLimiter) caso contrário.
+func allowRequest(ip string) (ok bool, retryAfter time.Duration) {
+	if cache.Enabled() {
+		return cache.AllowRateLimit(ip, rateLimiter.max, rateLimiter.window)
+	}
+	return rateLimiter.allow(ip)
 }
