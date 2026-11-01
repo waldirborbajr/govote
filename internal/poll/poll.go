@@ -1,3 +1,4 @@
+// Package poll implements poll validation, vote recording, and result queries.
 package poll
 
 import (
@@ -81,7 +82,7 @@ func GetResults(pollID int64) ([]models.ResultAnswer, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []models.ResultAnswer
 	for rows.Next() {
@@ -271,7 +272,7 @@ func CastVote(
 			Message: "database error",
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// BEGIN IMMEDIATE acquires SQLite's write lock up front. The default
 	// (BEGIN DEFERRED, what tx.Begin() issues) starts as a read and only
@@ -363,7 +364,7 @@ func validateAnswerIDs(pollID int64, answerIDs []int64) *VoteError {
 	if err != nil {
 		return &VoteError{Status: http.StatusInternalServerError, Message: "database error"}
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	found := make(map[int64]bool, len(answerIDs))
 	for rows.Next() {

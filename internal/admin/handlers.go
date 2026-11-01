@@ -1,4 +1,3 @@
-// admin/handlers.go
 // Package admin implements the administrator authentication workflows (OTP
 // login, password change) and super-admin management of other admins.
 package admin
@@ -46,13 +45,18 @@ func clearAdminCookie(w http.ResponseWriter) {
 // HandleUIRequestAdminTemporaryPassword handles the new "Solicitar Senha" feature.
 func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 
 	phoneRaw := strings.TrimSpace(r.FormValue("phone"))
 	phone := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(phoneRaw, "(", ""), ")", ""), "-", ""), " ", "")
 
 	if phone == "" {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Telefone é obrigatório."})
+		if err := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Telefone é obrigatório."}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -66,12 +70,16 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 		phone,
 	).Scan(&id, &username, &enabled)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Administrador não localizado com este telefone."})
+		if err := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Administrador não localizado com este telefone."}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	if enabled == 0 {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Conta administrativa desativada."})
+		if err := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Conta administrativa desativada."}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -84,16 +92,20 @@ func HandleUIRequestAdminTemporaryPassword(w http.ResponseWriter, r *http.Reques
 		security.HashPasscode(tempPass),
 		id,
 	); err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Erro ao gerar senha temporária."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Erro ao gerar senha temporária."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, tempPass)
-	
+
 	// o envio real via WhatsApp substitui este log.
 	storage.LogAction("ADMIN_TEMP_PASSWORD_ISSUED", "user="+username)
-	
-	web.Templates.ExecuteTemplate(w, "admin_passcode_sent", web.PageData{WhatsAppURL: whatsappURL})
+
+	if err := web.Templates.ExecuteTemplate(w, "admin_passcode_sent", web.PageData{WhatsAppURL: whatsappURL}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIRequestAdminOTP (legacy for 4-digit, kept for compatibility)
@@ -104,7 +116,10 @@ func HandleUIRequestAdminOTP(w http.ResponseWriter, r *http.Request) {
 // HandleAdminLoginPost - enhanced to handle needs_change and token_version.
 func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 	usernameRaw := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	ip := web.ClientIP(r)
@@ -116,9 +131,11 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	lockKey := storage.LockoutKeyAdmin(username)
 	if locked, remaining := storage.IsLocked(lockKey); locked {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{
+		if err := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{
 			Error: "Conta temporariamente bloqueada. Tente novamente em " + remaining.Round(time.Second).String() + ".",
-		})
+		}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -141,20 +158,26 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		storage.RecordFailure(lockKey)
 		storage.LogActionIP("ADMIN_LOGIN_FAIL", "user="+username, ip)
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Credenciais inválidas"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Credenciais inválidas"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	if enabled == 0 {
 		storage.LogActionIP("ADMIN_LOGIN_DISABLED", "user="+username, ip)
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso administrativo revogado."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso administrativo revogado."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	if !storedOTP.Valid || storedOTP.String == "" || !security.CheckPasscode(storedOTP.String, password) {
 		storage.RecordFailure(lockKey)
 		storage.LogActionIP("ADMIN_LOGIN_FAIL", "user="+username, ip)
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Código inválido ou expirado."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -180,11 +203,15 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if adminObj.NeedsChange {
-		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{AdminUser: adminObj})
+		if err := web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{AdminUser: adminObj}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
-	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
+	if err := web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleAdminChangePassword updated to support any admin.
@@ -192,11 +219,16 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 // um novo cookie com a versão atualizada.
 func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 	newPass := r.FormValue("new_password")
 
 	if len(newPass) < 8 {
-		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Senha deve ter no mínimo 8 caracteres."})
+		if err := web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Senha deve ter no mínimo 8 caracteres."}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -222,11 +254,15 @@ func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 		username,
 	)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Erro ao atualizar senha."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Erro ao atualizar senha."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Administrador não encontrado."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_change_password", web.PageData{Error: "Administrador não encontrado."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -240,7 +276,9 @@ func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 	setAdminCookie(w, token)
 
 	adminObj := &models.Admin{Username: username, IsSuper: isSuper, Enabled: true}
-	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj})
+	if err := web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: adminObj}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleAdminLogout invalida a sessão atual (cookie) e incrementa
@@ -258,25 +296,34 @@ func HandleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/admin", http.StatusSeeOther)
 }
 
+// HandleUIManageAdmins renders the administrator management page.
 func HandleUIManageAdmins(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
 	if err != nil || !admin.IsSuper {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso reservado exclusivamente ao super administrador."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso reservado exclusivamente ao super administrador."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	renderManageAdminsPage(w, admin, "", "")
 }
 
+// HandleUIManageAdminsPost creates or updates an administrator from the form.
 func HandleUIManageAdminsPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
 	if err != nil || !admin.IsSuper {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Operação não autorizada."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Operação não autorizada."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	cpfRaw := strings.TrimSpace(r.FormValue("cpf"))
 	phoneRaw := strings.TrimSpace(r.FormValue("phone"))
@@ -319,7 +366,7 @@ func renderManageAdminsPage(w http.ResponseWriter, currentAdmin *models.Admin, e
 
 	var list []models.Admin
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var a models.Admin
 			var isSuper, enabled int64
@@ -332,10 +379,12 @@ func renderManageAdminsPage(w http.ResponseWriter, currentAdmin *models.Admin, e
 		}
 	}
 
-	web.Templates.ExecuteTemplate(w, "manage_admins", web.PageData{
+	if err := web.Templates.ExecuteTemplate(w, "manage_admins", web.PageData{
 		AdminUser:  currentAdmin,
 		AdminsList: list,
 		Error:      errMsg,
 		Message:    successMsg,
-	})
+	}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }

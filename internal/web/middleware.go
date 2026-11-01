@@ -39,15 +39,15 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 // LimitBodyMiddleware wraps r.Body with MaxBytesReader for every request.
 // Applies to UI form POSTs and API JSON alike.
 func LimitBodyMiddleware(next http.Handler) http.Handler {
-	max := int64(defaultMaxBodyBytes)
+	maxBodySize := int64(defaultMaxBodyBytes)
 	if v := os.Getenv("GOVOTE_MAX_BODY_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			max = n
+			maxBodySize = n
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, max)
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		}
 		next.ServeHTTP(w, r)
 	})

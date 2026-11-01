@@ -1,4 +1,5 @@
-// session.go
+// Package web provides HTTP helpers for responses, authentication sessions,
+// static assets, and request rate limiting.
 package web
 
 import (
@@ -25,12 +26,12 @@ func GetAuthenticatedAdmin(r *http.Request) (*models.Admin, error) {
 	}
 
 	var (
-		id       int64
-		name     string
-		phone    string
-		isSuper  int64
-		enabled  int64
-		dbUser   string
+		id        int64
+		name      string
+		phone     string
+		isSuper   int64
+		enabled   int64
+		dbUser    string
 		dbVersion int64
 	)
 

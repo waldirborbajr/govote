@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	// Register the SQLite driver with database/sql.
 	_ "modernc.org/sqlite"
 )
 
@@ -352,7 +353,7 @@ func migrateVotesJSONCheck() error {
 	if err != nil {
 		return fmt.Errorf("database migration error (votes begin): %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	for _, stmt := range []string{
 		`CREATE TABLE votes_new (

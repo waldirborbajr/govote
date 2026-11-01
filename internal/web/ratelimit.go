@@ -42,10 +42,10 @@ type RateLimiter struct {
 var rateLimiter = newRateLimiter()
 
 func newRateLimiter() *RateLimiter {
-	max := defaultMaxRequests
+	maxRequests := defaultMaxRequests
 	if v := os.Getenv("GOVOTE_RATE_LIMIT_MAX"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			max = n
+			maxRequests = n
 		}
 	}
 
@@ -58,7 +58,7 @@ func newRateLimiter() *RateLimiter {
 
 	rl := &RateLimiter{
 		visits: make(map[string][]time.Time),
-		max:    max,
+		max:    maxRequests,
 		window: time.Duration(windowSec) * time.Second,
 	}
 

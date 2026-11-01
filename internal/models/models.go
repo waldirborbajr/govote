@@ -2,6 +2,7 @@
 // voting application (polls, answers, voters, admins and request payloads).
 package models
 
+// Poll represents a voting poll and its configured answers.
 type Poll struct {
 	ID         int64    `json:"id"`
 	Title      string   `json:"title"`
@@ -14,6 +15,7 @@ type Poll struct {
 	CreatedAt  string   `json:"created_at"`
 }
 
+// PollStats contains aggregate voting statistics for a poll.
 type PollStats struct {
 	PollTitle  string   `json:"poll_title"`
 	TotalVotes int64    `json:"total_votes"`
@@ -21,6 +23,7 @@ type PollStats struct {
 	Values     []int64  `json:"values"`
 }
 
+// Answer is one selectable option in a poll.
 type Answer struct {
 	ID           int64  `json:"id"`
 	PollID       int64  `json:"poll_id"`
@@ -28,18 +31,21 @@ type Answer struct {
 	DisplayOrder int    `json:"display_order"`
 }
 
+// ResultAnswer contains an answer and its vote count.
 type ResultAnswer struct {
 	ID    int64  `json:"id"`
 	Text  string `json:"text"`
 	Votes int    `json:"votes"`
 }
 
+// RequestPasscodeReq is the JSON body for requesting a voter passcode.
 type RequestPasscodeReq struct {
 	CPF   string `json:"cpf"`
 	Name  string `json:"name"`
 	Phone string `json:"phone"`
 }
 
+// VerifyReq is the JSON body for verifying a voter passcode.
 type VerifyReq struct {
 	CPF      string `json:"cpf"`
 	Passcode string `json:"passcode"`
@@ -57,6 +63,7 @@ type TelegramRequestCodeReq struct {
 	ChatID string `json:"chat_id"`
 }
 
+// CreatePollReq is the JSON body for creating a poll.
 type CreatePollReq struct {
 	Title      string `json:"title"`
 	Type       string `json:"type"`
@@ -77,6 +84,7 @@ type VoteReq struct {
 	AnswerIDs []int64 `json:"answer_ids"`
 }
 
+// Admin represents an administrator account.
 type Admin struct {
 	ID          int64  `json:"id"`
 	Username    string `json:"username"`
@@ -88,6 +96,7 @@ type Admin struct {
 	NeedsChange bool   `json:"needs_change"`
 }
 
+// AdminLoginReq is the JSON body for administrator login.
 type AdminLoginReq struct {
 	Username string `json:"username"`
 	Password string `json:"password"`

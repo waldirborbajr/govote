@@ -106,10 +106,7 @@ func TelegramChatID(id string) error {
 	if id == "" {
 		return fmt.Errorf("chat_id é obrigatório")
 	}
-	n := id
-	if strings.HasPrefix(n, "-") {
-		n = n[1:]
-	}
+	n := strings.TrimPrefix(id, "-")
 	if n == "" || !reDigitsOnly.MatchString(n) {
 		return fmt.Errorf("chat_id inválido")
 	}

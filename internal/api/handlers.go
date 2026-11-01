@@ -1,4 +1,3 @@
-// api/handlers.go
 // Package api implements the JSON HTTP handlers for the public voting API and
 // the admin statistics endpoint.
 package api
@@ -154,7 +153,7 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 	ok := err == nil &&
 		storedHash.Valid && storedHash.String != "" &&
 		security.CheckPasscode(storedHash.String, req.Passcode) &&
-		!(usedAt.Valid && usedAt.String != "") &&
+		(!usedAt.Valid || usedAt.String == "") &&
 		notExpired
 
 	if !ok {
@@ -196,7 +195,7 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleListPolls returns the currently active polls with their answers.
-func HandleListPolls(w http.ResponseWriter, r *http.Request) {
+func HandleListPolls(w http.ResponseWriter, _ *http.Request) {
 	var polls []models.Poll
 	if cache.GetJSON("polls:active", &polls) {
 		web.RespondJSON(w, http.StatusOK, polls)
@@ -216,7 +215,7 @@ func HandleListPolls(w http.ResponseWriter, r *http.Request) {
 		web.RespondError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var p models.Poll
@@ -262,7 +261,7 @@ func fetchAnswers(pollID int64) ([]models.Answer, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer arows.Close()
+	defer func() { _ = arows.Close() }()
 
 	var answers []models.Answer
 	for arows.Next() {
@@ -298,7 +297,7 @@ func fetchAnswersForPolls(pollIDs []int64) (map[int64][]models.Answer, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byPoll := make(map[int64][]models.Answer, len(pollIDs))
 	for rows.Next() {
@@ -421,12 +420,15 @@ func HandleCreatePoll(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		storage.DB.Exec(
+		if _, err := storage.DB.Exec(
 			`INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
 			lastInsertID,
 			text,
 			i,
-		)
+		); err != nil {
+			web.RespondError(w, http.StatusInternalServerError, "error creating poll answer")
+			return
+		}
 	}
 
 	HandleListPolls(w, r)
@@ -550,7 +552,7 @@ func HandleResults(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleAdminStats returns global voting statistics used by the dashboard.
-func HandleAdminStats(w http.ResponseWriter, r *http.Request) {
+func HandleAdminStats(w http.ResponseWriter, _ *http.Request) {
 	var totalVotes int64
 	if err := storage.DB.QueryRow("SELECT count(DISTINCT voter_hash) FROM votes").Scan(&totalVotes); err != nil {
 		web.RespondError(w, http.StatusInternalServerError, "db error")
@@ -576,7 +578,7 @@ func HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 
 	var timeline []map[string]interface{}
 	if err == nil {
-		defer trows.Close()
+		defer func() { _ = trows.Close() }()
 		for trows.Next() {
 			var hour string
 			var count int64

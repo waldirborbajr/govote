@@ -1,4 +1,3 @@
-// handlers.go
 // Package ui implements the server-rendered HTMX handlers for the voter flow
 // and the administrator dashboard.
 package ui
@@ -20,27 +19,35 @@ import (
 )
 
 // HandleUIIndex renders the landing page.
-func HandleUIIndex(w http.ResponseWriter, r *http.Request) {
+func HandleUIIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	web.Templates.ExecuteTemplate(w, "page", web.PageData{})
+	if err := web.Templates.ExecuteTemplate(w, "page", web.PageData{}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIVerifyForm renders the passcode verification form.
-func HandleUIVerifyForm(w http.ResponseWriter, r *http.Request) {
+func HandleUIVerifyForm(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	web.Templates.ExecuteTemplate(w, "verify_form", web.PageData{})
+	if err := web.Templates.ExecuteTemplate(w, "verify_form", web.PageData{}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIVotingFlow renders the voter entry choices.
-func HandleUIVotingFlow(w http.ResponseWriter, r *http.Request) {
+func HandleUIVotingFlow(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	web.Templates.ExecuteTemplate(w, "voting_flow", web.PageData{})
+	if err := web.Templates.ExecuteTemplate(w, "voting_flow", web.PageData{}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIRequestPasscodeForm renders the request-passcode form.
-func HandleUIRequestPasscodeForm(w http.ResponseWriter, r *http.Request) {
+func HandleUIRequestPasscodeForm(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	web.Templates.ExecuteTemplate(w, "auth", web.PageData{})
+	if err := web.Templates.ExecuteTemplate(w, "auth", web.PageData{}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIAdmin renders the admin dashboard or login form depending on session.
@@ -49,11 +56,15 @@ func HandleUIAdmin(w http.ResponseWriter, r *http.Request) {
 
 	admin, err := web.GetAuthenticatedAdmin(r)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{})
+		if err := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
-	web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: admin})
+	if err := web.Templates.ExecuteTemplate(w, "admin_dashboard", web.PageData{AdminUser: admin}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIAdminPolls renders the polls managed by the authenticated admin.
@@ -61,7 +72,9 @@ func HandleUIAdminPolls(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Sessão expirada."})
+		if err := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Sessão expirada."}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	renderUIAdminPollsList(w, admin, "")
@@ -83,10 +96,12 @@ func renderUIAdminPollsList(w http.ResponseWriter, admin *models.Admin, msg stri
 	}
 
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "polls", web.PageData{Error: "Erro ao carregar enquetes do banco."})
+		if err := web.Templates.ExecuteTemplate(w, "polls", web.PageData{Error: "Erro ao carregar enquetes do banco."}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var polls []models.Poll
 	for rows.Next() {
@@ -97,13 +112,18 @@ func renderUIAdminPollsList(w http.ResponseWriter, admin *models.Admin, msg stri
 		polls = append(polls, p)
 	}
 
-	web.Templates.ExecuteTemplate(w, "polls", web.PageData{Polls: polls, AdminUser: admin, Message: msg})
+	if err := web.Templates.ExecuteTemplate(w, "polls", web.PageData{Polls: polls, AdminUser: admin, Message: msg}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIRequestPasscode handles the voter passcode request form submission.
 func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 
 	cpfRaw := strings.TrimSpace(r.FormValue("cpf"))
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -111,7 +131,9 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	phoneRaw := strings.TrimSpace(r.FormValue("phone"))
 
 	if cpfRaw == "" || name == "" || phoneRaw == "" {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf, nome e telefone são obrigatórios"})
+		if err := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf, nome e telefone são obrigatórios"}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -121,15 +143,21 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 	phone = strings.ReplaceAll(phone, " ", "")
 
 	if err := validate.CPF(cpf); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)})
+		if renderErr := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	if err := validate.Name(name); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)})
+		if renderErr := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	if err := validate.Phone(phone); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)})
+		if renderErr := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -152,46 +180,61 @@ func HandleUIRequestPasscode(w http.ResponseWriter, r *http.Request) {
 		security.HashPasscode(passcode),
 		expiresAt,
 	); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Se os dados forem válidos, um código será enviado.", CSRFToken: web.EnsureCSRFToken(w, r)})
+		if renderErr := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "Se os dados forem válidos, um código será enviado.", CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	whatsappURL := notify.BuildWhatsAppURL(phone, passcode)
 	storage.LogAction("PASSCODE_ISSUED", "cpf_fp="+security.TokenFingerprint(cpf))
 
-	web.Templates.ExecuteTemplate(w, "passcode_sent", web.PageData{
+	if err := web.Templates.ExecuteTemplate(w, "passcode_sent", web.PageData{
 		WhatsAppURL: whatsappURL,
 		CSRFToken:   web.EnsureCSRFToken(w, r),
-	})
+	}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIVerify handles the voter passcode verification form submission.
 func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 	cpf := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(r.FormValue("cpf")), ".", ""), "-", "")
 	passcode := strings.TrimSpace(r.FormValue("passcode"))
 	csrf := web.EnsureCSRFToken(w, r)
 
 	if cpf == "" || passcode == "" {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf e passcode obrigatórios", CSRFToken: csrf})
+		if err := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: "cpf e passcode obrigatórios", CSRFToken: csrf}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	if err := validate.CPF(cpf); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: csrf})
+		if renderErr := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: csrf}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	if err := validate.Passcode(passcode); err != nil {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: csrf})
+		if renderErr := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: err.Error(), CSRFToken: csrf}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	lockKey := storage.LockoutKeyCPF(cpf)
 	if locked, remaining := storage.IsLocked(lockKey); locked {
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{
+		if err := web.Templates.ExecuteTemplate(w, "auth", web.PageData{
 			Error:     "Muitas tentativas. Tente novamente em " + remaining.Round(time.Second).String() + ".",
 			CSRFToken: csrf,
-		})
+		}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -214,23 +257,28 @@ func HandleUIVerify(w http.ResponseWriter, r *http.Request) {
 	ok := err == nil &&
 		storedHash.Valid && storedHash.String != "" &&
 		security.CheckPasscode(storedHash.String, passcode) &&
-		!(usedAt.Valid && usedAt.String != "") &&
+		(!usedAt.Valid || usedAt.String == "") &&
 		notExpired
 
 	if !ok {
 		storage.RecordFailure(lockKey)
 		storage.LogActionIP("VOTER_VERIFY_FAIL", "cpf_fp="+security.TokenFingerprint(cpf), web.ClientIP(r))
-		web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: generic, CSRFToken: csrf})
+		if err := web.Templates.ExecuteTemplate(w, "auth", web.PageData{Error: generic, CSRFToken: csrf}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	storage.ClearFailures(lockKey)
 	storage.LogActionIP("VOTER_VERIFY_OK", "cpf_fp="+security.TokenFingerprint(cpf), web.ClientIP(r))
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	storage.DB.Exec(
+	if _, err := storage.DB.Exec(
 		`UPDATE voters SET passcode = NULL, passcode_expires_at = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
 		now, now, cpf,
-	)
+	); err != nil {
+		http.Error(w, "erro ao verificar eleitor", http.StatusInternalServerError)
+		return
+	}
 
 	token := security.GenerateVoterToken(cpf)
 	http.SetCookie(w, &http.Cookie{
@@ -254,10 +302,12 @@ func renderUIVoterPolls(w http.ResponseWriter, cpf, errMsg string) {
 		now, now,
 	)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "db error"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "db error"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var polls []models.Poll
 	for rows.Next() {
@@ -268,7 +318,9 @@ func renderUIVoterPolls(w http.ResponseWriter, cpf, errMsg string) {
 		polls = append(polls, p)
 	}
 
-	web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Polls: polls, Error: errMsg})
+	if err := web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Polls: polls, Error: errMsg}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIPolls renders the active polls for a voter identified by cpf query.
@@ -285,7 +337,9 @@ func HandleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimPrefix(r.URL.Path, "/ui/polls/")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "invalid poll id"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "invalid poll id"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -295,12 +349,16 @@ func HandleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 		id,
 	).Scan(&p.ID, &p.Title, &p.Type, &p.StartDate, &p.EndDate, &p.CreatedAt)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "poll not found"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "poll not found"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	if !poll.IsActive(p.StartDate, p.EndDate) {
-		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "poll is no longer active"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "poll is no longer active"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -309,10 +367,12 @@ func HandleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 		p.ID,
 	)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "db error"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "polls", web.PageData{CPF: cpf, Error: "db error"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
-	defer arows.Close()
+	defer func() { _ = arows.Close() }()
 
 	var answers []models.Answer
 	for arows.Next() {
@@ -324,13 +384,18 @@ func HandleUIPollDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Answers = answers
 
-	web.Templates.ExecuteTemplate(w, "poll_detail", web.PageData{CPF: cpf, Poll: p})
+	if err := web.Templates.ExecuteTemplate(w, "poll_detail", web.PageData{CPF: cpf, Poll: p}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIVote handles a vote submitted from the HTMX voting form.
 func HandleUIVote(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 
 	token := ""
 	if c, err := r.Cookie("voter_token"); err == nil {
@@ -338,10 +403,12 @@ func HandleUIVote(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenCPF, tokenOK := security.ValidateVoterToken(token)
 	if !tokenOK {
-		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{
+		if err := web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{
 			Error:     "sessão de voto expirada — verifique o código novamente",
 			CSRFToken: web.EnsureCSRFToken(w, r),
-		})
+		}); err != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 	cpf := tokenCPF
@@ -350,7 +417,9 @@ func HandleUIVote(w http.ResponseWriter, r *http.Request) {
 	idStr = strings.TrimSuffix(idStr, "/vote")
 	pollID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid poll id", CSRFToken: web.EnsureCSRFToken(w, r)})
+		if renderErr := web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid poll id", CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -359,24 +428,32 @@ func HandleUIVote(w http.ResponseWriter, r *http.Request) {
 	for _, s := range answerIDStrs {
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
-			web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid answer id", CSRFToken: web.EnsureCSRFToken(w, r)})
+			if renderErr := web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: "invalid answer id", CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+				http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+			}
 			return
 		}
 		answerIDs = append(answerIDs, n)
 	}
 
 	if voteErr := poll.CastVote(pollID, cpf, answerIDs); voteErr != nil {
-		web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: voteErr.Message, CSRFToken: web.EnsureCSRFToken(w, r)})
+		if renderErr := web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, Error: voteErr.Message, CSRFToken: web.EnsureCSRFToken(w, r)}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
-	web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, CSRFToken: web.EnsureCSRFToken(w, r)})
+	if err := web.Templates.ExecuteTemplate(w, "vote_result", web.PageData{CPF: cpf, CSRFToken: web.EnsureCSRFToken(w, r)}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUIGlobalStats renders the global statistics dashboard fragment.
-func HandleUIGlobalStats(w http.ResponseWriter, r *http.Request) {
+func HandleUIGlobalStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	web.Templates.ExecuteTemplate(w, "global_stats", web.PageData{})
+	if err := web.Templates.ExecuteTemplate(w, "global_stats", web.PageData{}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUICreatePollForm renders the poll creation form for an authenticated admin.
@@ -384,10 +461,14 @@ func HandleUICreatePollForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Faça login para continuar"})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Faça login para continuar"}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
-	web.Templates.ExecuteTemplate(w, "create_poll", web.PageData{AdminUser: admin})
+	if err := web.Templates.ExecuteTemplate(w, "create_poll", web.PageData{AdminUser: admin}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }
 
 // HandleUICreatePoll persists a poll submitted from the HTMX creation form.
@@ -398,7 +479,10 @@ func HandleUICreatePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "formulário inválido", http.StatusBadRequest)
+		return
+	}
 
 	title := r.FormValue("title")
 	pType := r.FormValue("type")
@@ -451,12 +535,15 @@ func HandleUICreatePoll(w http.ResponseWriter, r *http.Request) {
 		if text == "" {
 			continue
 		}
-		storage.DB.Exec(
+		if _, err := storage.DB.Exec(
 			`INSERT INTO answers (poll_id, text, display_order) VALUES (?, ?, ?)`,
 			lastInsertID,
 			text,
 			i,
-		)
+		); err != nil {
+			web.RespondError(w, http.StatusInternalServerError, "error creating poll answer")
+			return
+		}
 	}
 
 	renderUIAdminPollsList(w, admin, "Enquete publicada com sucesso!")
@@ -467,7 +554,9 @@ func HandleUIResults(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	admin, err := web.GetAuthenticatedAdmin(r)
 	if err != nil {
-		web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso restrito."})
+		if renderErr := web.Templates.ExecuteTemplate(w, "admin_login", web.PageData{Error: "Acesso restrito."}); renderErr != nil {
+			http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -498,5 +587,7 @@ func HandleUIResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	web.Templates.ExecuteTemplate(w, "results", web.PageData{AdminUser: admin, Poll: p, Results: results})
+	if err := web.Templates.ExecuteTemplate(w, "results", web.PageData{AdminUser: admin, Poll: p, Results: results}); err != nil {
+		http.Error(w, "erro ao renderizar página", http.StatusInternalServerError)
+	}
 }

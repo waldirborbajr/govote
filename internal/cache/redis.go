@@ -74,7 +74,7 @@ func Close() {
 
 // AllowRateLimit returns (allowed, retryAfter). When Redis is off, callers
 // should fall back to the in-memory limiter.
-func AllowRateLimit(ip string, max int, window time.Duration) (bool, time.Duration) {
+func AllowRateLimit(ip string, maxRequests int, window time.Duration) (bool, time.Duration) {
 	if !Enabled() || ip == "" {
 		return true, 0
 	}
@@ -93,7 +93,7 @@ func AllowRateLimit(ip string, max int, window time.Duration) (bool, time.Durati
 		return true, 0 // fail-open to avoid blocking all traffic
 	}
 	n := countCmd.Val()
-	if int(n) >= max {
+	if int(n) >= maxRequests {
 		// Approximate retry: full window
 		return false, window
 	}
@@ -104,6 +104,7 @@ func AllowRateLimit(ip string, max int, window time.Duration) (bool, time.Durati
 // Generic JSON cache
 // ---------------------------------------------------------------------------
 
+// GetJSON loads a cached JSON value into dest, returning false on a miss/error.
 func GetJSON(key string, dest any) bool {
 	if !Enabled() {
 		return false
@@ -119,6 +120,7 @@ func GetJSON(key string, dest any) bool {
 	return true
 }
 
+// SetJSON stores v as JSON for ttl.
 func SetJSON(key string, v any, ttl time.Duration) {
 	if !Enabled() {
 		return
@@ -131,6 +133,7 @@ func SetJSON(key string, v any, ttl time.Duration) {
 	_ = rdb.Set(ctx, key, b, ttl).Err()
 }
 
+// Del removes keys from the cache.
 func Del(keys ...string) {
 	if !Enabled() || len(keys) == 0 {
 		return
@@ -152,6 +155,7 @@ func InvalidatePoll(pollID int64) {
 // Already-voted fast path (avoids UNIQUE hit on every attempt)
 // ---------------------------------------------------------------------------
 
+// MarkVoted records the fast-path marker for a voter and poll.
 func MarkVoted(pollID int64, voterHash string) {
 	if !Enabled() {
 		return
@@ -161,6 +165,7 @@ func MarkVoted(pollID int64, voterHash string) {
 	_ = rdb.Set(ctx, key, "1", 48*time.Hour).Err()
 }
 
+// HasVoted reports whether the cache contains a vote marker.
 func HasVoted(pollID int64, voterHash string) bool {
 	if !Enabled() {
 		return false
@@ -175,6 +180,7 @@ func HasVoted(pollID int64, voterHash string) bool {
 // Vote queue (Redis Stream) — optional async path
 // ---------------------------------------------------------------------------
 
+// VoteStream is the Redis Stream key used for queued votes.
 const VoteStream = "govote:votes"
 
 // VoteJob is the payload enqueued for the single writer worker.

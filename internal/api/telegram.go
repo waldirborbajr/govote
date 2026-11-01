@@ -1,8 +1,8 @@
-// telegram.go
-// Handler for the Telegram/n8n integration: issues a voter passcode the
-// same way HandleRequestPasscode does, but returns the plaintext code
-// instead of a WhatsApp link, so a trusted bot (run from n8n) can deliver
-// it directly in the chat. Protected by web.RequireServiceAPIKey.
+// Package api implements the JSON HTTP handlers for the public voting API
+// and its integrations.
+//
+// The Telegram integration issues voter passcodes to trusted bots protected
+// by web.RequireServiceAPIKey.
 package api
 
 import (

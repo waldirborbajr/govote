@@ -1,3 +1,4 @@
+// Package main starts the GoVote web server.
 package main
 
 import (
@@ -13,15 +14,16 @@ import (
 	"time"
 
 	"github.com/waldirborbajr/govote/internal/cache"
-	"github.com/waldirborbajr/govote/internal/server"
 	"github.com/waldirborbajr/govote/internal/security"
+	"github.com/waldirborbajr/govote/internal/server"
 	"github.com/waldirborbajr/govote/internal/storage"
 	"github.com/waldirborbajr/govote/internal/web"
 	"github.com/waldirborbajr/govote/internal/worker"
 )
 
 // version is set at build time via:
-//   -ldflags "-X main.version=1.2.3"
+//
+//	-ldflags "-X main.version=1.2.3"
 var version = "dev"
 
 const (
@@ -76,7 +78,7 @@ func run() error {
 	}
 
 	httpsSrv := &http.Server{
-		Addr:         httpsAddr,
+		Addr: httpsAddr,
 		Handler: web.Chain(
 			http.HandlerFunc(server.Router),
 			web.LimitBodyMiddleware,

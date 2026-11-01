@@ -1,3 +1,4 @@
+// Package views renders server-side HTML components.
 package views
 
 import (
@@ -14,7 +15,7 @@ func Render(w http.ResponseWriter, r *http.Request, component templ.Component) {
 	}
 }
 
-// Map of old template names to new components for gradual migration helper.
+// ComponentFor maps old template names to components during the migration.
 func ComponentFor(name string, data PageData) templ.Component {
 	switch name {
 	case "page":

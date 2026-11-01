@@ -21,9 +21,13 @@ import (
 	"encoding/hex"
 )
 
+// CSS contains the embedded stylesheet.
+//
 //go:embed static/app.css
 var CSS []byte
 
+// HTMXJS contains the embedded HTMX JavaScript bundle.
+//
 //go:embed static/htmx.min.js
 var HTMXJS []byte
 

@@ -1,3 +1,4 @@
+// Package storage provides database access and authentication lockout storage.
 package storage
 
 import (
@@ -95,11 +96,11 @@ func RecordFailure(key string) {
 	}
 
 	count++
-	max := maxFailures()
+	maximumFailures := maxFailures()
 	var untilVal interface{}
-	if count >= max {
+	if count >= maximumFailures {
 		untilVal = now.Add(lockDuration()).Format(time.RFC3339)
-		count = max
+		count = maximumFailures
 	} else {
 		untilVal = nil
 	}
