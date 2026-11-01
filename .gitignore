@@ -38,3 +38,5 @@ votes.db
 /govote
 /.env
 /bin
+/votes.db-shm
+/votes.db-wal
