@@ -36,3 +36,4 @@ votes.db
 
 # Compiled binary
 /govote
+/.env
