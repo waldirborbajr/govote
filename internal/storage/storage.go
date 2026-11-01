@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS votes (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	poll_id    INTEGER NOT NULL,
 	voter_hash TEXT    NOT NULL,
-	answer_ids TEXT,
+	answer_ids TEXT    NOT NULL CHECK (json_valid(answer_ids)),
 	voted_at   TEXT,
 	UNIQUE(poll_id, voter_hash)
 );
@@ -267,6 +267,10 @@ CREATE INDEX IF NOT EXISTS idx_votes_hour ON votes(strftime('%Y-%m-%dT%H:00:00',
 		}
 	}
 
+	if err := migrateVotesJSONCheck(); err != nil {
+		return err
+	}
+
 	// Migração incremental: telegram_chat_id foi adicionado após o schema
 	// inicial, então bancos existentes precisam de ALTER TABLE. SQLite não
 	// suporta "ADD COLUMN IF NOT EXISTS", então tentamos e ignoramos o erro
@@ -326,5 +330,52 @@ func bootstrapSuperAdmin() error {
 
 	LogAction("BOOTSTRAP_SUPER_ADMIN", "username="+username+" phone="+phone)
 	log.Printf("✅ Super-admin bootstrap criado: username=%s phone=%s (sem senha — use OTP/senha temporária e defina senha no primeiro acesso)", username, phone)
+	return nil
+}
+
+// migrateVotesJSONCheck rebuilds the votes table so that answer_ids must be
+// valid JSON (CHECK constraint). SQLite cannot add a CHECK with ALTER TABLE,
+// so the table is recreated. Idempotent: it returns early when the constraint
+// is already present. Intended for development databases; it copies all rows.
+func migrateVotesJSONCheck() error {
+	var ddl string
+	if err := DB.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'votes'`,
+	).Scan(&ddl); err != nil {
+		return fmt.Errorf("database migration error (votes lookup): %w", err)
+	}
+	if strings.Contains(ddl, "json_valid(answer_ids)") {
+		return nil
+	}
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("database migration error (votes begin): %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`CREATE TABLE votes_new (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			poll_id    INTEGER NOT NULL,
+			voter_hash TEXT    NOT NULL,
+			answer_ids TEXT    NOT NULL CHECK (json_valid(answer_ids)),
+			voted_at   TEXT,
+			UNIQUE(poll_id, voter_hash)
+		)`,
+		`INSERT INTO votes_new (id, poll_id, voter_hash, answer_ids, voted_at)
+			SELECT id, poll_id, voter_hash, COALESCE(answer_ids, '[]'), voted_at FROM votes`,
+		`DROP TABLE votes`,
+		`ALTER TABLE votes_new RENAME TO votes`,
+		`CREATE INDEX IF NOT EXISTS idx_votes_hour ON votes(strftime('%Y-%m-%dT%H:00:00', voted_at))`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("database migration error (votes rebuild): %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("database migration error (votes commit): %w", err)
+	}
 	return nil
 }

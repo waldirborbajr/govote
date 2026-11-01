@@ -230,6 +230,19 @@ func CastVote(
 		}
 	}
 
+	// Duplicate IDs would be counted twice by GetResults (json_each), so reject
+	// them explicitly for every poll type.
+	seen := make(map[int64]struct{}, len(answerIDs))
+	for _, id := range answerIDs {
+		if _, dup := seen[id]; dup {
+			return &VoteError{
+				Status:  http.StatusBadRequest,
+				Message: fmt.Sprintf("answer %d repeated", id),
+			}
+		}
+		seen[id] = struct{}{}
+	}
+
 	if voteErr := validateAnswerIDs(pollID, answerIDs); voteErr != nil {
 		return voteErr
 	}

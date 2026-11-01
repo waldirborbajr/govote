@@ -56,7 +56,7 @@ env:
 # ---------------------------------------------------------------------------
 
 # Compila o binário em ./bin/govote
-build:
+build: deps
     templ generate ./internal/views/
     mkdir -p bin
     go build {{go_flags}} -ldflags="-s -w" -o bin/govote ./cmd/govote
