@@ -23,8 +23,23 @@ const (
 
 // EnsureSelfSignedCert carrega cert.pem/key.pem do disco se existirem,
 // ou gera um novo par autoassinado (válido para localhost/127.0.0.1) caso contrário.
+//
+// Gera só quando NENHUM dos dois arquivos existe. Se algum existir e não
+// carregar (corrompido, permissão, par cert/chave descasado), retorna erro em
+// vez de sobrescrever: sobrescrever trocaria o certificado em produção sem aviso.
 func EnsureSelfSignedCert() (tls.Certificate, error) {
-	if cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile); err == nil {
+	_, certErr := os.Stat(tlsCertFile)
+	_, keyErr := os.Stat(tlsKeyFile)
+	certExists := certErr == nil
+	keyExists := keyErr == nil
+
+	if certExists || keyExists {
+		cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf(
+				"certificado existente inválido (%s/%s): %w — corrija ou remova os arquivos; não serão sobrescritos",
+				tlsCertFile, tlsKeyFile, err)
+		}
 		return cert, nil
 	}
 
