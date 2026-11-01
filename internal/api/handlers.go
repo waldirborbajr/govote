@@ -167,12 +167,15 @@ func HandleVerify(w http.ResponseWriter, r *http.Request) {
 	storage.LogActionIP("VOTER_VERIFY_OK", "cpf_fp="+security.TokenFingerprint(req.CPF), web.ClientIP(r))
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	storage.DB.Exec(
+	if _, err := storage.DB.Exec(
 		`UPDATE voters SET passcode = NULL, passcode_expires_at = NULL, verified_at = ?, used_at = ? WHERE cpf = ?`,
 		now,
 		now,
 		req.CPF,
-	)
+	); err != nil {
+		web.RespondError(w, http.StatusInternalServerError, "erro ao verificar eleitor")
+		return
+	}
 
 	token := security.GenerateVoterToken(req.CPF)
 	http.SetCookie(w, &http.Cookie{

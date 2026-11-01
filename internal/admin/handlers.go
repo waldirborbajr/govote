@@ -159,7 +159,13 @@ func HandleAdminLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storage.ClearFailures(lockKey)
-	storage.DB.Exec(`UPDATE admin SET passcode = NULL WHERE id = ?`, id)
+	if _, err := storage.DB.Exec(`UPDATE admin SET passcode = NULL WHERE id = ?`, id); err != nil {
+		// Fail closed: se o passcode de uso único não puder ser invalidado,
+		// não concede sessão.
+		storage.LogActionIP("ADMIN_LOGIN_ERROR", "user="+username+" clear_passcode", ip)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
 	storage.LogActionIP("ADMIN_LOGIN_OK", "user="+username, ip)
 
 	token := security.GenerateJWT(username, tokenVersion)
@@ -241,10 +247,12 @@ func HandleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
 // token_version para invalidar outros tokens do mesmo admin.
 func HandleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	if adm, err := web.GetAuthenticatedAdmin(r); err == nil && adm != nil {
-		storage.DB.Exec(
+		if _, err := storage.DB.Exec(
 			`UPDATE admin SET token_version = token_version + 1 WHERE username = ?`,
 			adm.Username,
-		)
+		); err != nil {
+			storage.LogActionIP("ADMIN_LOGOUT_ERROR", "user="+adm.Username, web.ClientIP(r))
+		}
 	}
 	clearAdminCookie(w)
 	http.Redirect(w, r, "/ui/admin", http.StatusSeeOther)
