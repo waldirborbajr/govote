@@ -55,9 +55,20 @@ env:
 # Go — build / test / vet / bench
 # ---------------------------------------------------------------------------
 
+# Versão do templ fixada (igual ao go.mod e ao Dockerfile)
+templ_version := "v0.2.793"
+# Sempre o binário que o go install coloca, para não usar um templ antigo do PATH
+templ_bin := `echo "$(go env GOPATH)/bin/templ"`
+
+# Instala o templ fixado se faltar ou se a versão não bater com go.mod
+templ-tool:
+    @if [ ! -x "{{templ_bin}}" ] || [ "$("{{templ_bin}}" version 2>/dev/null)" != "{{templ_version}}" ]; then \
+        go install github.com/a-h/templ/cmd/templ@{{templ_version}}; \
+    fi
+
 # Compila o binário em ./bin/govote
-build: deps
-    templ generate ./internal/views/
+build: deps templ-tool
+    "{{templ_bin}}" generate ./internal/views/
     mkdir -p bin
     go build {{go_flags}} -ldflags="-s -w" -o bin/govote ./cmd/govote
     @echo "bin/govote ok"
@@ -70,7 +81,6 @@ build-race:
 
 # go mod tidy + download
 deps:
-    go mod tidy
     go mod download
 
 # Unit tests
