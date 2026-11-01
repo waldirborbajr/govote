@@ -1,16 +1,15 @@
-run:
-  timeout: 5m
+# golangci-lint v2 (a partir de v2 o campo "version" é obrigatório).
+version: "2"
 
 linters:
+  default: none
   enable:
     - govet
-    - staticcheck
+    - staticcheck   # inclui o antigo gosimple (removido como linter separado na v2)
     - errcheck
     - ineffassign
     - unused
-    - gosimple
     - revive
     - gocritic
 
-issues:
-  exclude-use-default: false
+# Sem presets: equivale ao antigo "exclude-use-default: false".
