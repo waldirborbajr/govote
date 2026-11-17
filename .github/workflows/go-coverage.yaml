@@ -1,0 +1,114 @@
+name: Go Tests and Coverage
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: write  # Comentar no PR
+  contents: read
+
+env:
+  COVERAGE_THRESHOLD: "70"
+
+jobs:
+  test:
+    name: Test and Publish Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Check formatting and vet
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Arquivos sem gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+
+      - name: Run tests with coverage
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Build coverage report
+        id: report
+        if: always() && hashFiles('coverage.out') != ''
+        run: |
+          go tool cover -func=coverage.out > coverage-func.txt
+
+          total="$(awk '/^total:/ { sub("%", "", $3); print $3 }' coverage-func.txt)"
+          module="$(go list -m)/"
+
+          if awk -v t="$total" -v m="$COVERAGE_THRESHOLD" 'BEGIN { exit !(t + 0 >= m + 0) }'; then
+            banner="## ✅ Cobertura Go: ${total}% (meta: ${COVERAGE_THRESHOLD}%) — APROVADO"
+          else
+            banner="## ❌ Cobertura Go: ${total}% (meta: ${COVERAGE_THRESHOLD}%) — ABAIXO DA META"
+          fi
+
+          below="$(awk -v m="$COVERAGE_THRESHOLD" -v mod="$module" '
+            $1 != "total:" {
+              p = $3; sub("%", "", p)
+              if (p + 0 < m + 0) {
+                f = $1
+                if (index(f, mod) == 1) f = substr(f, length(mod) + 1)
+                printf "| `%s` | `%s` | %s |\n", f, $2, $3
+              }
+            }' coverage-func.txt)"
+          below_count="$(printf '%s' "$below" | grep -c . || true)"
+
+          {
+            echo "$banner"
+            echo
+            echo "Cobertura de statements (\`go tool cover -func\`) do commit \`${GITHUB_SHA::7}\`."
+            echo
+            echo "<details>"
+            echo "<summary>Funções abaixo de ${COVERAGE_THRESHOLD}% (${below_count})</summary>"
+            echo
+            if [ "$below_count" -gt 0 ]; then
+              echo "| Arquivo:linha | Função | Cobertura |"
+              echo "|---|---|---|"
+              printf '%s\n' "$below" | head -n 100
+              if [ "$below_count" -gt 100 ]; then
+                echo
+                echo "_Exibindo 100 de ${below_count}. A lista completa está no artefato \`coverage\`._"
+              fi
+            else
+              echo "Nenhuma função abaixo da meta."
+            fi
+            echo
+            echo "</details>"
+          } > code-coverage-results.md
+
+          cat code-coverage-results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish coverage comment
+        if: always() && github.event_name == 'pull_request' && steps.report.outcome == 'success'
+        uses: marocchino/sticky-pull-request-comment@v3
+        continue-on-error: true  # Token é somente leitura em PRs de forks
+        with:
+          header: go-coverage
+          path: code-coverage-results.md
+
+      - name: Upload coverage artifacts
+        if: always() && steps.report.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage-func.txt
+            code-coverage-results.md
